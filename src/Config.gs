@@ -45,7 +45,7 @@ const LIMITS = {
 };
 
 /** AI関数(=AI(単一セル))を入れる列キー。空行には入れない（AI("")防止）。 */
-const AI_COLS = ['AI_DAI','AI_CHU','AI_SHO','AI_REASON','AI_SCENE','AI_CAUSE'];
+const AI_COLS = ['AI_SUM','AI_DAI','AI_CHU','AI_SHO','AI_REASON','AI_SCENE','AI_CAUSE'];
 
 /* ============================================================
  * ★メイン表「ご意見記録」の列位置（実構成に準拠）
@@ -58,7 +58,7 @@ const COL = {
   MAIL: 16,  // P メールアドレス
   // 内容
   RAW:    28, // AB 内容（原文）      ★触れない
-  SUMMARY:29, // AC 内容（要約）      ★触れない
+  AI_SUM: 29, // AC 内容（要約）      ← =AI(要約用結合文CL)  AI要約(200字/顧客目線)
   AITEXT: 30, // AD AI投入用テキスト  ← =ANONYMIZE(AB)
   // AI出力
   AI_DAI:   31, // AE AI大分類
@@ -82,30 +82,33 @@ const COL = {
   R_CAUSE:47, // AU 原因分類候補文（結合文兼用）
   // ★追加：小分類の補助列（末尾 CJ/CK に新設）
   V_SHO:  88, // CJ 小分類候補文
-  W_SHO:  89  // CK 小分類用結合文
+  W_SHO:  89, // CK 小分類用結合文
+  SUM_TXT:90  // CL 要約用結合文（AC=AI要約 の入力プロンプト）★新設
 };
 
 /** 数式内で使う列レター */
 const CL = {
-  RAW:'AB', AITEXT:'AD',
+  RAW:'AB', AI_SUM:'AC', AITEXT:'AD',
   AI_DAI:'AE', AI_CHU:'AF', AI_SHO:'AG', AI_SCENE:'AH', AI_CAUSE:'AI', AI_REASON:'AJ',
   FIX_DAI:'AK', FIX_CHU:'AL', FIX_SHO:'AM', FIX_SCENE:'AN', FIX_CAUSE:'AO',
   G_DAI:'AP', I_CHU:'AQ', J_CHU:'AR', L_REASON:'AS', P_SCENE:'AT', R_CAUSE:'AU',
-  V_SHO:'CJ', W_SHO:'CK'
+  V_SHO:'CJ', W_SHO:'CK', SUM_TXT:'CL'
 };
 
 /** 追加する新列の見出し（他の見出しには触れない） */
 const NEW_HEADERS = [
   { col: COL.V_SHO, name: '小分類候補文' },
-  { col: COL.W_SHO, name: '小分類用結合文' }
+  { col: COL.W_SHO, name: '小分類用結合文' },
+  { col: COL.SUM_TXT, name: '要約用結合文' }
 ];
 
 /**
  * システムが「数式を書き込む」列（＝上書きされる列）。この列以外は触れない。
- * 原文AB・要約AC・確定AK〜AO・PII・社員情報などは対象外。
+ * 原文AB・確定AK〜AO・PII・社員情報などは対象外。
+ * ※AC(要約)はAI要約を入れるため対象に含む（既存の手入力要約があれば上書きされる点に注意）。
  */
 const FORMULA_TARGET_COLS = [
-  'AITEXT','G_DAI','AI_DAI','I_CHU','J_CHU','AI_CHU',
+  'SUM_TXT','AI_SUM','AITEXT','G_DAI','AI_DAI','I_CHU','J_CHU','AI_CHU',
   'V_SHO','W_SHO','AI_SHO','L_REASON','AI_REASON',
   'P_SCENE','AI_SCENE','R_CAUSE','AI_CAUSE'
 ];

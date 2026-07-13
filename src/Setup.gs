@@ -21,11 +21,12 @@ const SETUP_PLAN = [
   '  大分類一覧 / 設定 / 精度検証',
   '',
   '【メイン表「' + SHEETS.CLAIM + '」で触れる列だけ】',
-  '  数式を設定: AD, AP, AE, AQ, AR, AF, CJ(新), CK(新), AG, AS, AJ, AT, AH, AU, AI',
+  '  数式を設定: AC(要約), AD, AP, AE, AQ, AR, AF, CJ(新), CK(新), AG, AS, AJ, AT, AH, AU, AI, CL(新)',
   '  プルダウン: AK, AL, AM, AN, AO',
-  '  新ヘッダ追加: CJ=小分類候補文, CK=小分類用結合文',
+  '  新ヘッダ追加: CJ=小分類候補文, CK=小分類用結合文, CL=要約用結合文',
   '',
-  '【絶対に触れない列】AB(原文) / AC(要約) / AK〜AO(確定の値) / N,O,P(個人情報) / BB〜CI(社員・管理)'
+  '【絶対に触れない列】AB(原文) / AK〜AO(確定の値) / N,O,P(個人情報) / BB〜CI(社員・管理)',
+  '  ※AC(内容・要約)はAI要約を入れるため上書き対象（既存の手入力要約がある場合は要注意）'
 ];
 
 /* ============================ 実行エントリ ============================ */
@@ -71,9 +72,10 @@ function applyMainSheetFormulas() {
   }
   var res = ui.alert('メイン表への数式適用',
     '「' + SHEETS.CLAIM + '」の次の列だけを上書きします。\n' +
-    '数式: AD,AP,AE,AQ,AR,AF,CJ,CK,AG,AS,AJ,AT,AH,AU,AI\n' +
+    '数式: AC(AI要約),AD,AP,AE,AQ,AR,AF,CJ,CK,AG,AS,AJ,AT,AH,AU,AI,CL\n' +
     'プルダウン: AK〜AO\n' +
-    '（原文AB・要約AC・確定値・個人情報・社員/管理列には触れません）\n\n実行しますか？',
+    '（原文AB・確定値・個人情報・社員/管理列には触れません。\n' +
+    '　AC=要約はAIで上書きします＝既存の手入力要約がある場合はご注意）\n\n実行しますか？',
     ui.ButtonSet.OK_CANCEL);
   if (res !== ui.Button.OK) return;
 
@@ -208,12 +210,20 @@ function buildFormula_(key, r) {
 
   var AB=CL.RAW, AD=CL.AITEXT, AE=CL.AI_DAI, AF=CL.AI_CHU, AG=CL.AI_SHO, AH=CL.AI_SCENE,
       AP=CL.G_DAI, AQ=CL.I_CHU, AR=CL.J_CHU, AS=CL.L_REASON, AT=CL.P_SCENE, AU=CL.R_CAUSE,
-      CJ=CL.V_SHO, CK=CL.W_SHO;
+      CJ=CL.V_SHO, CK=CL.W_SHO, CLc=CL.SUM_TXT;
 
   switch (key) {
 
     case 'AITEXT': // AD 匿名化
       return '=IF($'+AB+r+'="","",ANONYMIZE($'+AB+r+'))';
+
+    case 'SUM_TXT': // CL 要約用結合文（AC=AI要約の入力プロンプト）
+      return '=IF($'+AD+r+'="","",' +
+        '"あなたはお客様相談窓口の担当者です。次のご意見を、お客様の立場・目線に立った自然な文章で200文字程度に要約してください。事実関係は変えず、経緯とご要望が伝わるようにする。箇条書きにせず、個人情報や固有の番号は含めない。"&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】200文字程度の要約文のみ。")';
+
+    case 'AI_SUM': // AC AI要約（200字・顧客目線）
+      return '='+AIF+'($'+CLc+r+')';
 
     case 'G_DAI': // AP 大分類用結合文
       return '=IF($'+AD+r+'="","",' +

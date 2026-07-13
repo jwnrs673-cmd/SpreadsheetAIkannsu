@@ -23,32 +23,53 @@ function showSetupPlan() {
 }
 
 /**
- * 依存プルダウン（任意）。メイン表で
- *  AK(確定大分類)を選ぶ → AL(確定中分類)候補を絞る
- *  AL(確定中分類)を選ぶ → AM(確定小分類)候補を絞る
- * 簡易トリガのため権限不要。失敗しても全件リストが有効で運用は止まらない。
+ * メイン表の編集トリガ（自動化の要）。
+ *  1) AB(原文)を入力/貼付 → その行に全数式を自動反映（AI分類が自動で走る）
+ *  2) AK(確定大分類)を選ぶ → AL(確定中分類)候補を絞る
+ *  3) AL(確定中分類)を選ぶ → AM(確定小分類)候補を絞る
+ * 簡易トリガのため追加の権限設定は不要。失敗しても運用は止まらない。
  */
 function onEdit(e) {
   try {
     if (!e || !e.range) return;
     var sh = e.range.getSheet();
     if (sh.getName() !== SHEETS.CLAIM) return;
-    var col = e.range.getColumn(), row = e.range.getRow();
-    if (row < 2) return;
     var ss = e.source;
+    var r1 = e.range.getRow(), r2 = e.range.getLastRow();
+    var c1 = e.range.getColumn(), c2 = e.range.getLastColumn();
 
-    if (col === COL.FIX_DAI) {
-      // 中分類マスター: A=大分類(1), B=中分類(2)
-      setDependentValidation_(ss, sh, row, COL.FIX_CHU, SHEETS.RULE_CHU, 1, 2, e.value);
-      sh.getRange(row, COL.FIX_SHO).clearDataValidations(); // 小分類はリセット
+    // 1) 原文(AB)が編集範囲に含まれる → 対象行に数式を自動反映
+    if (c1 <= COL.RAW && COL.RAW <= c2) {
+      autoFillRows_(sh, Math.max(r1, 2), r2);
     }
-    if (col === COL.FIX_CHU) {
-      // 小分類マスター: A=大分類(1), B=中分類(2), C=小分類(3)
-      var dai = sh.getRange(row, COL.FIX_DAI).getValue();
-      setDependentTwoKeyValidation_(ss, sh, row, COL.FIX_SHO, SHEETS.RULE_SHO, 1, 2, 3, dai, e.value);
+
+    // 2)(3) 確定プルダウンの依存絞り込み（単一セル編集時のみ）
+    if (e.range.getNumRows() === 1 && e.range.getNumColumns() === 1 && r1 >= 2) {
+      if (c1 === COL.FIX_DAI) {
+        setDependentValidation_(ss, sh, r1, COL.FIX_CHU, SHEETS.RULE_CHU, 1, 2, e.value);
+        sh.getRange(r1, COL.FIX_SHO).clearDataValidations();
+      }
+      if (c1 === COL.FIX_CHU) {
+        var dai = sh.getRange(r1, COL.FIX_DAI).getValue();
+        setDependentTwoKeyValidation_(ss, sh, r1, COL.FIX_SHO, SHEETS.RULE_SHO, 1, 2, 3, dai, e.value);
+      }
     }
   } catch (err) {
     Logger.log('onEdit: ' + err);
+  }
+}
+
+/**
+ * 指定行範囲のうち、原文(AB)が入っている行に全数式を設定する。
+ * onEdit から呼ばれ、原文入力だけで自動分類されるようにする。
+ */
+function autoFillRows_(sh, from, to) {
+  for (var r = from; r <= to; r++) {
+    var ab = sh.getRange(r, COL.RAW).getValue();
+    if (String(ab).trim() === '') continue; // 空行はスキップ（AI("")防止）
+    FORMULA_TARGET_COLS.forEach(function (key) {
+      sh.getRange(r, COL[key]).setFormula(buildFormula_(key, r));
+    });
   }
 }
 
