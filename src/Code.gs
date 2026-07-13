@@ -13,6 +13,8 @@ function onOpen() {
     .addItem('① マスター系シートを作成/更新', 'setupMasters')
     .addItem('② メイン表に数式・プルダウンを適用', 'applyMainSheetFormulas')
     .addSeparator()
+    .addItem('確定プルダウンを絞り込み直す（全行）', 'refreshDependentDropdowns')
+    .addSeparator()
     .addItem('テストデータを投入（5ケース）', 'insertTestCases')
     .addItem('変更内容（計画）を表示', 'showSetupPlan')
     .addItem('マスターを既定値で再作成（上書き注意）', 'resetMastersToDefault')
@@ -21,6 +23,21 @@ function onOpen() {
 
 function showSetupPlan() {
   SpreadsheetApp.getUi().alert(SETUP_PLAN.join('\n'));
+}
+
+/**
+ * 全行の確定プルダウンを、現在の確定大分類/中分類にあわせて依存絞り込みし直す。
+ * 一括貼り付けなどで onEdit が走らなかった場合の手動リフレッシュ用。
+ */
+function refreshDependentDropdowns() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(SHEETS.CLAIM);
+  if (!sh) { SpreadsheetApp.getUi().alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。'); return; }
+  var res;
+  try { res = resolveColumns_(sh); } catch (e) { res = staticRes_(); }
+  var lastData = getLastDataRow_(sh, res.COLX.RAW);
+  narrowExistingRows_(ss, sh, res, lastData);
+  SpreadsheetApp.getActive().toast('確定プルダウンを絞り込み直しました（' + Math.max(lastData - 1, 0) + '行）。', 'クレームAI分類', 5);
 }
 
 /**
@@ -39,7 +56,9 @@ function onEdit(e) {
     var r1 = e.range.getRow(), r2 = e.range.getLastRow();
     var c1 = e.range.getColumn(), c2 = e.range.getLastColumn();
 
-    var res = resolveColumns_(sh);   // ★見出し名から列位置を解決（並び替えに対応）
+    // 見出しから列解決。失敗しても固定位置で続行（プルダウン絞り込みを止めない）
+    var res;
+    try { res = resolveColumns_(sh); } catch (e2) { res = staticRes_(); }
     var COLX = res.COLX;
 
     // 1) 原文(内容（原文）)が編集範囲に含まれる → 対象行に数式を自動反映

@@ -257,6 +257,13 @@ function resolveColumns_(sh) {
   return { COLX: COLX, CLX: CLX, dynamic: true };
 }
 
+/** 固定位置(Config.gsのCOL/CL)から解決マップを作る（フォールバック用）。 */
+function staticRes_() {
+  var COLX = {}, CLX = {};
+  Object.keys(HEADER_TEXT).forEach(function (k) { COLX[k] = COL[k]; CLX[k] = colLetter_(COL[k]); });
+  return { COLX: COLX, CLX: CLX, dynamic: false };
+}
+
 /* ============================ メイン表 ============================ */
 
 /** 数式ビルダーが参照する列レターマップ（実行時に resolveColumns_ の結果をセット）。 */
@@ -435,12 +442,33 @@ function setupValidations_(ss, sh, res) {
   var last = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にもプルダウンを付ける
   var n = last - 1;
 
+  // 基本（フルリスト）: 親未選択でも何か選べるように全件を入れておく
   applyListValidation_(sh, COLX.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.RULE_DAI, 1));
   applyListValidation_(sh, COLX.FIX_CHU,   2, n, rangeOfColumn_(ss, SHEETS.RULE_CHU, 2));
   applyListValidation_(sh, COLX.FIX_SHO,   2, n, rangeOfColumn_(ss, SHEETS.RULE_SHO, 3));
   applyListValidation_(sh, COLX.FIX_SCENE, 2, n, rangeOfColumn_(ss, SHEETS.SCENE_M, 1));
   applyListValidation_(sh, COLX.FIX_CAUSE, 2, n, rangeOfColumn_(ss, SHEETS.CAUSE_M, 1));
+
+  // 既存行を「現在の確定大分類/中分類」で依存絞り込み（onEditに頼らず即反映）
+  narrowExistingRows_(ss, sh, res, lastData);
   Logger.log('プルダウン設定完了（' + n + '行）');
+}
+
+/**
+ * 既存の各行について、確定大分類(AK)で中分類(AL)候補を、
+ * 確定中分類(AL)で小分類(AM)候補を、その行だけに絞り込む。
+ */
+function narrowExistingRows_(ss, sh, res, lastData) {
+  if (lastData < 2) return;
+  var COLX = res.COLX;
+  var akv = sh.getRange(2, COLX.FIX_DAI, lastData - 1, 1).getValues();
+  var alv = sh.getRange(2, COLX.FIX_CHU, lastData - 1, 1).getValues();
+  for (var i = 0; i < akv.length; i++) {
+    var row = i + 2;
+    var dai = String(akv[i][0]).trim(), chu = String(alv[i][0]).trim();
+    if (dai) setDependentValidation_(ss, sh, row, COLX.FIX_CHU, SHEETS.RULE_CHU, 1, 2, dai);
+    if (dai && chu) setDependentTwoKeyValidation_(ss, sh, row, COLX.FIX_SHO, SHEETS.RULE_SHO, 1, 2, 3, dai, chu);
+  }
 }
 
 function rangeOfColumn_(ss, sheetName, col) {
