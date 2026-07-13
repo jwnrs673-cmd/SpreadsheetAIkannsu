@@ -15,6 +15,7 @@ function onOpen() {
     .addSeparator()
     .addItem('テストデータを投入（5ケース）', 'insertTestCases')
     .addItem('変更内容（計画）を表示', 'showSetupPlan')
+    .addItem('マスターを既定値で再作成（上書き注意）', 'resetMastersToDefault')
     .addToUi();
 }
 

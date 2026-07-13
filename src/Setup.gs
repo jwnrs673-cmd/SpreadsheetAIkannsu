@@ -31,10 +31,48 @@ const SETUP_PLAN = [
 
 /* ============================ 実行エントリ ============================ */
 
-/** マスター系シートを構築（メイン表には触れない。安全）。 */
+/**
+ * マスター系シートを構築（メイン表には触れない。安全）。
+ * ★分類マスターは「無ければ作成、あれば温存」＝手編集した分類は上書きしません。
+ *   既定値で作り直したい場合はメニュー「マスターを既定値で再作成」を使用。
+ */
 function setupMasters() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   Logger.log(SETUP_PLAN.join('\n'));
+  try {
+    // 分類定義マスターは非破壊（既存の手編集を温存）
+    ensureMasterSheet_(ss, SHEETS.RULE_DAI,   MASTER_DAI);
+    ensureMasterSheet_(ss, SHEETS.RULE_CHU,   MASTER_CHU);
+    ensureMasterSheet_(ss, SHEETS.RULE_SHO,   MASTER_SHO);
+    ensureMasterSheet_(ss, SHEETS.SCENE_M,    MASTER_SCENE);
+    ensureMasterSheet_(ss, SHEETS.SCENE_RULE, MASTER_SCENE_RULE);
+    ensureMasterSheet_(ss, SHEETS.CAUSE_M,    MASTER_CAUSE);
+    ensureMasterSheet_(ss, SHEETS.CAUSE_RULE, MASTER_CAUSE_RULE);
+    // 補助シートは常に最新化（利用者の手編集は想定しない）
+    writeDaiList_(ss);
+    writeConfigSheet_(ss);
+    setupAccuracySheet_(ss);
+    stampConfig_(ss);
+    SpreadsheetApp.getActive().toast('マスター系シートを構築しました（既存の分類は温存）。', 'クレームAI分類', 5);
+  } catch (e) {
+    Logger.log('setupMasters: エラー ' + e + '\n' + (e.stack || ''));
+    SpreadsheetApp.getUi().alert('マスター構築でエラー: ' + e.message);
+    throw e;
+  }
+}
+
+/**
+ * 分類マスターを Config.gs の既定値で「強制的に」作り直す（確認ダイアログ付き）。
+ * ★手編集した分類はすべて破棄されます。既定値へ戻したいときだけ使用。
+ */
+function resetMastersToDefault() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var res = ui.alert('マスターを既定値で再作成',
+    '分類マスター（大/中/小分類・発生場面・原因分類）を Config.gs の既定値で上書きします。\n' +
+    '★シート上で手編集した分類はすべて失われます。よろしいですか？',
+    ui.ButtonSet.OK_CANCEL);
+  if (res !== ui.Button.OK) return;
   try {
     writeMasterSheet_(ss, SHEETS.RULE_DAI,   MASTER_DAI);
     writeMasterSheet_(ss, SHEETS.RULE_CHU,   MASTER_CHU);
@@ -44,13 +82,10 @@ function setupMasters() {
     writeMasterSheet_(ss, SHEETS.CAUSE_M,    MASTER_CAUSE);
     writeMasterSheet_(ss, SHEETS.CAUSE_RULE, MASTER_CAUSE_RULE);
     writeDaiList_(ss);
-    writeConfigSheet_(ss);
-    setupAccuracySheet_(ss);
-    stampConfig_(ss);
-    SpreadsheetApp.getActive().toast('マスター系シートを構築しました。', 'クレームAI分類', 5);
+    SpreadsheetApp.getActive().toast('マスターを既定値で再作成しました。', 'クレームAI分類', 5);
   } catch (e) {
-    Logger.log('setupMasters: エラー ' + e + '\n' + (e.stack || ''));
-    SpreadsheetApp.getUi().alert('マスター構築でエラー: ' + e.message);
+    Logger.log('resetMastersToDefault: エラー ' + e);
+    ui.alert('再作成でエラー: ' + e.message);
     throw e;
   }
 }
@@ -100,6 +135,7 @@ function ensureSheet_(ss, name) {
   return sh;
 }
 
+/** マスターを強制投入（既存内容をクリアして最新化）。 */
 function writeMasterSheet_(ss, name, data) {
   var sh = ensureSheet_(ss, name);
   sh.clearContents();
@@ -110,8 +146,26 @@ function writeMasterSheet_(ss, name, data) {
   Logger.log('マスター投入: ' + name + '（' + (data.length - 1) + '件）');
 }
 
+/** マスターを「無ければ作成／あれば温存」で用意（手編集を壊さない）。 */
+function ensureMasterSheet_(ss, name, data) {
+  var sh = ss.getSheetByName(name);
+  if (sh && getLastDataRow_(sh, 1) >= 2) {   // 既にデータあり → 温存
+    Logger.log('マスター温存: ' + name);
+    return;
+  }
+  writeMasterSheet_(ss, name, data);         // 無い/空 → 既定値を投入
+}
+
+/** 大分類一覧（参考用）を大分類ルールマスターの現在の内容から再構築。 */
 function writeDaiList_(ss) {
-  var names = MASTER_DAI.slice(1).map(function (r) { return [r[0]]; });
+  var src = ss.getSheetByName(SHEETS.RULE_DAI);
+  var names = null;
+  if (src) {
+    var last = getLastDataRow_(src, 1);
+    if (last >= 2) names = src.getRange(2, 1, last - 1, 1).getValues();
+  }
+  if (!names || !names.length) names = MASTER_DAI.slice(1).map(function (r) { return [r[0]]; });
+
   var sh = ensureSheet_(ss, SHEETS.DAI_LIST);
   sh.clearContents();
   sh.getRange(1, 1, 1, 1).setValues([['大分類']]).setFontWeight('bold').setBackground('#e8eaed');
@@ -381,7 +435,7 @@ function setupValidations_(ss, sh, res) {
   var last = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にもプルダウンを付ける
   var n = last - 1;
 
-  applyListValidation_(sh, COLX.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.DAI_LIST, 1));
+  applyListValidation_(sh, COLX.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.RULE_DAI, 1));
   applyListValidation_(sh, COLX.FIX_CHU,   2, n, rangeOfColumn_(ss, SHEETS.RULE_CHU, 2));
   applyListValidation_(sh, COLX.FIX_SHO,   2, n, rangeOfColumn_(ss, SHEETS.RULE_SHO, 3));
   applyListValidation_(sh, COLX.FIX_SCENE, 2, n, rangeOfColumn_(ss, SHEETS.SCENE_M, 1));
