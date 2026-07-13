@@ -38,20 +38,23 @@ function onEdit(e) {
     var r1 = e.range.getRow(), r2 = e.range.getLastRow();
     var c1 = e.range.getColumn(), c2 = e.range.getLastColumn();
 
-    // 1) 原文(AB)が編集範囲に含まれる → 対象行に数式を自動反映
-    if (c1 <= COL.RAW && COL.RAW <= c2) {
-      autoFillRows_(sh, Math.max(r1, 2), r2);
+    var res = resolveColumns_(sh);   // ★見出し名から列位置を解決（並び替えに対応）
+    var COLX = res.COLX;
+
+    // 1) 原文(内容（原文）)が編集範囲に含まれる → 対象行に数式を自動反映
+    if (c1 <= COLX.RAW && COLX.RAW <= c2) {
+      autoFillRows_(sh, Math.max(r1, 2), r2, res);
     }
 
     // 2)(3) 確定プルダウンの依存絞り込み（単一セル編集時のみ）
     if (e.range.getNumRows() === 1 && e.range.getNumColumns() === 1 && r1 >= 2) {
-      if (c1 === COL.FIX_DAI) {
-        setDependentValidation_(ss, sh, r1, COL.FIX_CHU, SHEETS.RULE_CHU, 1, 2, e.value);
-        sh.getRange(r1, COL.FIX_SHO).clearDataValidations();
+      if (c1 === COLX.FIX_DAI) {
+        setDependentValidation_(ss, sh, r1, COLX.FIX_CHU, SHEETS.RULE_CHU, 1, 2, e.value);
+        sh.getRange(r1, COLX.FIX_SHO).clearDataValidations();
       }
-      if (c1 === COL.FIX_CHU) {
-        var dai = sh.getRange(r1, COL.FIX_DAI).getValue();
-        setDependentTwoKeyValidation_(ss, sh, r1, COL.FIX_SHO, SHEETS.RULE_SHO, 1, 2, 3, dai, e.value);
+      if (c1 === COLX.FIX_CHU) {
+        var dai = sh.getRange(r1, COLX.FIX_DAI).getValue();
+        setDependentTwoKeyValidation_(ss, sh, r1, COLX.FIX_SHO, SHEETS.RULE_SHO, 1, 2, 3, dai, e.value);
       }
     }
   } catch (err) {
@@ -60,16 +63,22 @@ function onEdit(e) {
 }
 
 /**
- * 指定行範囲のうち、原文(AB)が入っている行に全数式を設定する。
+ * 指定行範囲のうち、原文が入っている行に全数式を設定する。
  * onEdit から呼ばれ、原文入力だけで自動分類されるようにする。
  */
-function autoFillRows_(sh, from, to) {
-  for (var r = from; r <= to; r++) {
-    var ab = sh.getRange(r, COL.RAW).getValue();
-    if (String(ab).trim() === '') continue; // 空行はスキップ（AI("")防止）
-    FORMULA_TARGET_COLS.forEach(function (key) {
-      sh.getRange(r, COL[key]).setFormula(buildFormula_(key, r));
-    });
+function autoFillRows_(sh, from, to, res) {
+  var COLX = res.COLX;
+  ACTIVE_CL = res.CLX; // buildFormula_ が解決済み列レターで数式を作る
+  try {
+    for (var r = from; r <= to; r++) {
+      var ab = sh.getRange(r, COLX.RAW).getValue();
+      if (String(ab).trim() === '') continue; // 空行はスキップ（AI("")防止）
+      FORMULA_TARGET_COLS.forEach(function (key) {
+        sh.getRange(r, COLX[key]).setFormula(buildFormula_(key, r));
+      });
+    }
+  } finally {
+    ACTIVE_CL = null;
   }
 }
 
@@ -128,15 +137,17 @@ function insertTestCases() {
     '返品できると言われたが、後日別の担当者から返品できないと言われた'                // 外周り接客/売場・作業時/返品・交換対応
   ];
 
-  var last = getLastDataRow_(sh, COL.RAW);
+  var res = resolveColumns_(sh); // 見出し名から列位置を解決
+  var COLX = res.COLX;
+  var last = getLastDataRow_(sh, COLX.RAW);
   var start = Math.max(last + 1, 2);
-  // A列(状況)に目印、AB列(原文)に本文
+  // A列(状況)に目印、原文列に本文
   var marks = cases.map(function () { return ['TEST']; });
   var texts = cases.map(function (t) { return [t]; });
   sh.getRange(start, 1, marks.length, 1).setValues(marks);
-  sh.getRange(start, COL.RAW, texts.length, 1).setValues(texts);
+  sh.getRange(start, COLX.RAW, texts.length, 1).setValues(texts);
 
-  setupMainSheet_(ss, sh);
-  setupValidations_(ss, sh);
+  setupMainSheet_(sh, res);
+  setupValidations_(ss, sh, res);
   SpreadsheetApp.getActive().toast('テスト5件を投入し数式を適用しました（A列=TEST）。', 'クレームAI分類', 6);
 }

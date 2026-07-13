@@ -95,12 +95,44 @@ const CL = {
   V_SHO:'CJ', W_SHO:'CK', SUM_TXT:'CL'
 };
 
-/** 追加する新列の見出し（他の見出しには触れない） */
-const NEW_HEADERS = [
-  { col: COL.V_SHO, name: '小分類候補文' },
-  { col: COL.W_SHO, name: '小分類用結合文' },
-  { col: COL.SUM_TXT, name: '要約用結合文' }
-];
+/**
+ * ★列位置を「見出し名」で自動解決するための対応表（キー → 1行目の見出しテキスト）。
+ * 列を並び替えても、この見出しさえ一致していれば正しい列を自動で見つけます。
+ * 見出しを改名した場合は、ここのテキストも合わせて更新してください。
+ * （上の COL / CL は、見出しが見つからないとき用のフォールバック既定位置）
+ */
+const HEADER_TEXT = {
+  RAW:      '内容（原文）',
+  AI_SUM:   '内容（要約）',
+  AITEXT:   'AI投入用テキスト',
+  AI_DAI:   'AI大分類',
+  AI_CHU:   'AI中分類',
+  AI_SHO:   'AI小分類',
+  AI_SCENE: 'AI発生場面',
+  AI_CAUSE: 'AI原因分類',
+  AI_REASON:'AI理由',
+  FIX_DAI:  '大分類',
+  FIX_CHU:  '中分類',
+  FIX_SHO:  '小分類',
+  FIX_SCENE:'発生場面',
+  FIX_CAUSE:'原因分類',
+  G_DAI:    '大分類用結合文',
+  I_CHU:    '中分類候補文',
+  J_CHU:    '中分類用結合文',
+  L_REASON: '補助セル',
+  P_SCENE:  '発生場面候補文',
+  R_CAUSE:  '原因分類候補文',
+  V_SHO:    '小分類候補文',    // 無ければ自動新設
+  W_SHO:    '小分類用結合文',  // 無ければ自動新設
+  SUM_TXT:  '要約用結合文'     // 無ければ自動新設
+};
+
+/** 見出しが無ければ末尾に新設してよいシステム補助列（それ以外は必須＝無ければ警告） */
+const SYSTEM_HELPER_KEYS = ['V_SHO', 'W_SHO', 'SUM_TXT'];
+
+/** 精度検証などで使う参考列（必須ではない。見出しで探し、無ければ既定レターにフォールバック） */
+const REF_HEADER_TEXT = { STORE: '店名' };
+const REF_FALLBACK_LETTER = { STORE: 'W' };
 
 /**
  * システムが「数式を書き込む」列（＝上書きされる列）。この列以外は触れない。

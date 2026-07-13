@@ -81,8 +81,9 @@ function applyMainSheetFormulas() {
 
   try {
     if (!ss.getSheetByName(SHEETS.RULE_CHU)) setupMasters(); // マスター未作成なら作る
-    setupMainSheet_(ss, sh);
-    setupValidations_(ss, sh);
+    var res = resolveColumns_(sh); // ★見出し名から列位置を解決（並び替えに対応）
+    setupMainSheet_(sh, res);
+    setupValidations_(ss, sh, res);
     SpreadsheetApp.getActive().toast('メイン表に数式・プルダウンを適用しました。', 'クレームAI分類', 5);
   } catch (e) {
     Logger.log('applyMainSheetFormulas: エラー ' + e + '\n' + (e.stack || ''));
@@ -132,34 +133,106 @@ function stampConfig_(ss) {
   if (f) sh.getRange(f.getRow(), 2).setValue(new Date());
 }
 
-/* ============================ メイン表 ============================ */
+/* ============================ 列の見出し解決 ============================ */
 
-/** メイン表に、許可された数式列だけを設定する（原文行のみ）。 */
-function setupMainSheet_(ss, sh) {
-  // 新規ヘッダ（CJ/CK）だけ設定（他のヘッダには触れない）
-  NEW_HEADERS.forEach(function (h) {
-    sh.getRange(1, h.col).setValue(h.name).setFontWeight('bold').setBackground('#d9ead3');
+/** 見出しテキストの正規化（前後空白・内部空白の除去、全角括弧→半角）。 */
+function normHeader_(s) {
+  return String(s).trim().replace(/\s+/g, '').replace(/（/g, '(').replace(/）/g, ')');
+}
+
+/** 列番号(1始まり)→列レター（例: 28→'AB'）。 */
+function colLetter_(n) {
+  var s = '';
+  while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - m - 1) / 26); }
+  return s;
+}
+
+/** 1行目の見出しから {正規化見出し: 列番号} を作る。 */
+function headerIndexMap_(sh) {
+  var lastCol = Math.max(sh.getLastColumn(), 1);
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {}, nonEmpty = 0;
+  for (var i = 0; i < headers.length; i++) {
+    var h = headers[i];
+    if (String(h).trim() !== '') { nonEmpty++; var k = normHeader_(h); if (map[k] === undefined) map[k] = i + 1; }
+  }
+  return { map: map, nonEmpty: nonEmpty, lastCol: lastCol };
+}
+
+/**
+ * ★メイン表の列位置を「見出し名」から解決する。
+ *  - 見つかった見出しはその位置を使う（列を並び替えても追従）。
+ *  - システム補助列(小分類候補文/小分類用結合文/要約用結合文)が無ければ末尾に新設。
+ *  - 見出しが実質空のシートは、従来の固定位置(Config.gs)にフォールバック。
+ *  - 必須見出しが見つからない場合はエラー（見出し名の確認を促す）。
+ * @return {{COLX:Object, CLX:Object, dynamic:boolean}}
+ */
+function resolveColumns_(sh) {
+  var hi = headerIndexMap_(sh);
+  var rawKey = normHeader_(HEADER_TEXT.RAW);
+
+  // 見出しがほぼ無い（新規/空シート）→ 固定位置にフォールバック
+  if (hi.nonEmpty === 0 || (hi.map[rawKey] === undefined && hi.nonEmpty < 5)) {
+    var COLX0 = {}, CLX0 = {};
+    Object.keys(HEADER_TEXT).forEach(function (key) { COLX0[key] = COL[key]; CLX0[key] = colLetter_(COL[key]); });
+    Logger.log('resolveColumns_: 見出し未検出のため固定位置を使用');
+    return { COLX: COLX0, CLX: CLX0, dynamic: false };
+  }
+
+  var COLX = {}, CLX = {}, missing = [];
+  var nextCol = hi.lastCol + 1;
+  Object.keys(HEADER_TEXT).forEach(function (key) {
+    var idx = hi.map[normHeader_(HEADER_TEXT[key])];
+    if (idx === undefined) {
+      if (SYSTEM_HELPER_KEYS.indexOf(key) >= 0) {
+        sh.getRange(1, nextCol).setValue(HEADER_TEXT[key]).setFontWeight('bold').setBackground('#d9ead3');
+        idx = nextCol; nextCol++;
+        Logger.log('補助列を新設: ' + HEADER_TEXT[key] + '（列' + colLetter_(idx) + '）');
+      } else {
+        missing.push(HEADER_TEXT[key]);
+        return;
+      }
+    }
+    COLX[key] = idx; CLX[key] = colLetter_(idx);
   });
 
-  var lastData = getLastDataRow_(sh, COL.RAW); // AB(原文)で最終データ行を判定
-  var templateLast = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にも補助数式を入れる範囲
+  if (missing.length) {
+    throw new Error('メイン表「' + SHEETS.CLAIM + '」に必要な見出しが見つかりません。\n' +
+      '1行目の見出し名を確認してください（並び順は自由ですが名称は一致が必要）:\n・' + missing.join('\n・'));
+  }
+  return { COLX: COLX, CLX: CLX, dynamic: true };
+}
 
-  // 補助列(結合文等)はテンプレとして空行にも入れる（IFで""になり安全）。
-  // AI列(=AI(単一セル))は原文がある行だけに入れる（AI("")防止）。
+/* ============================ メイン表 ============================ */
+
+/** 数式ビルダーが参照する列レターマップ（実行時に resolveColumns_ の結果をセット）。 */
+var ACTIVE_CL = null;
+
+/** メイン表に、許可された数式列だけを設定する（AI列は原文行のみ）。 */
+function setupMainSheet_(sh, res) {
+  var COLX = res.COLX;
+  ACTIVE_CL = res.CLX; // buildFormula_ がこの列レターで数式を作る
+
+  var lastData = getLastDataRow_(sh, COLX.RAW);
+  var templateLast = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1);
+
   FORMULA_TARGET_COLS.forEach(function (key) {
     if (AI_COLS.indexOf(key) >= 0) {
-      if (lastData >= 2) setColumnFormulas_(sh, COL[key], 2, lastData, buildFormula_.bind(null, key));
+      if (lastData >= 2) setColumnFormulas_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
     } else {
-      setColumnFormulas_(sh, COL[key], 2, templateLast, buildFormula_.bind(null, key));
+      setColumnFormulas_(sh, COLX[key], 2, templateLast, buildFormula_.bind(null, key));
     }
   });
 
+  ACTIVE_CL = null; // 後始末
+
   var msg;
   if (lastData >= 2) {
-    msg = '数式を設定しました。AI列: 2〜' + lastData + '行 ／ 補助列: 2〜' + templateLast + '行。';
+    msg = '数式を設定しました。AI列: 2〜' + lastData + '行 ／ 補助列: 2〜' + templateLast + '行'
+        + (res.dynamic ? '（見出し名で列を自動解決）' : '（固定位置）') + '。';
   } else {
-    msg = '補助列のテンプレ数式を 2〜' + templateLast + '行に入れました。' +
-          'AB列(原文)に内容を入力し、もう一度②を実行するとAI列(AE〜AJ)も入ります。';
+    msg = '補助列のテンプレ数式を 2〜' + templateLast + '行に入れました。'
+        + 'AB(原文)を入力すると、その行が自動分類されます（onEdit）。';
   }
   SpreadsheetApp.getActive().toast(msg, 'クレームAI分類', 8);
   Logger.log('setupMainSheet_: ' + msg);
@@ -208,9 +281,10 @@ function buildFormula_(key, r) {
   var CAU_A="'"+SHEETS.CAUSE_M+"'!$A$2:$A$"+LIMITS.CAUSE, CAU_B="'"+SHEETS.CAUSE_M+"'!$B$2:$B$"+LIMITS.CAUSE,
       CAU_R="'"+SHEETS.CAUSE_RULE+"'!$A$2:$A$"+LIMITS.CAUSE;
 
-  var AB=CL.RAW, AD=CL.AITEXT, AE=CL.AI_DAI, AF=CL.AI_CHU, AG=CL.AI_SHO, AH=CL.AI_SCENE,
-      AP=CL.G_DAI, AQ=CL.I_CHU, AR=CL.J_CHU, AS=CL.L_REASON, AT=CL.P_SCENE, AU=CL.R_CAUSE,
-      CJ=CL.V_SHO, CK=CL.W_SHO, CLc=CL.SUM_TXT;
+  var L = ACTIVE_CL || CL; // 実行時に解決した列レター（無ければ固定既定）
+  var AB=L.RAW, AD=L.AITEXT, AE=L.AI_DAI, AF=L.AI_CHU, AG=L.AI_SHO, AH=L.AI_SCENE,
+      AP=L.G_DAI, AQ=L.I_CHU, AR=L.J_CHU, AS=L.L_REASON, AT=L.P_SCENE, AU=L.R_CAUSE,
+      CJ=L.V_SHO, CK=L.W_SHO, CLc=L.SUM_TXT;
 
   switch (key) {
 
@@ -301,16 +375,17 @@ function buildFormula_(key, r) {
 
 /* ============================ プルダウン ============================ */
 
-function setupValidations_(ss, sh) {
-  var lastData = getLastDataRow_(sh, COL.RAW);
+function setupValidations_(ss, sh, res) {
+  var COLX = res.COLX;
+  var lastData = getLastDataRow_(sh, COLX.RAW);
   var last = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にもプルダウンを付ける
   var n = last - 1;
 
-  applyListValidation_(sh, COL.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.DAI_LIST, 1));
-  applyListValidation_(sh, COL.FIX_CHU,   2, n, rangeOfColumn_(ss, SHEETS.RULE_CHU, 2));
-  applyListValidation_(sh, COL.FIX_SHO,   2, n, rangeOfColumn_(ss, SHEETS.RULE_SHO, 3));
-  applyListValidation_(sh, COL.FIX_SCENE, 2, n, rangeOfColumn_(ss, SHEETS.SCENE_M, 1));
-  applyListValidation_(sh, COL.FIX_CAUSE, 2, n, rangeOfColumn_(ss, SHEETS.CAUSE_M, 1));
+  applyListValidation_(sh, COLX.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.DAI_LIST, 1));
+  applyListValidation_(sh, COLX.FIX_CHU,   2, n, rangeOfColumn_(ss, SHEETS.RULE_CHU, 2));
+  applyListValidation_(sh, COLX.FIX_SHO,   2, n, rangeOfColumn_(ss, SHEETS.RULE_SHO, 3));
+  applyListValidation_(sh, COLX.FIX_SCENE, 2, n, rangeOfColumn_(ss, SHEETS.SCENE_M, 1));
+  applyListValidation_(sh, COLX.FIX_CAUSE, 2, n, rangeOfColumn_(ss, SHEETS.CAUSE_M, 1));
   Logger.log('プルダウン設定完了（' + n + '行）');
 }
 
@@ -336,10 +411,28 @@ function setupAccuracySheet_(ss) {
   sh.clearContents();
   var C = "'" + SHEETS.CLAIM + "'";
   var R = LIMITS.ACC;
+
+  // メイン表の列レターを見出しから解決（無ければ固定既定にフォールバック）
+  var LET = {}; // key -> 列レター
+  Object.keys(HEADER_TEXT).forEach(function (k) { LET[k] = colLetter_(COL[k]); });
+  var storeLetter = REF_FALLBACK_LETTER.STORE;
+  var claim = ss.getSheetByName(SHEETS.CLAIM);
+  if (claim) {
+    try {
+      var hi = headerIndexMap_(claim);
+      Object.keys(HEADER_TEXT).forEach(function (k) {
+        var idx = hi.map[normHeader_(HEADER_TEXT[k])];
+        if (idx) LET[k] = colLetter_(idx);
+      });
+      var sIdx = hi.map[normHeader_(REF_HEADER_TEXT.STORE)];
+      if (sIdx) storeLetter = colLetter_(sIdx);
+    } catch (e) { Logger.log('精度検証: 見出し解決失敗のため固定位置を使用 ' + e); }
+  }
   function col(letter){ return C + '!$' + letter + '$2:$' + letter + '$' + R; }
 
-  var AE=col('AE'),AK=col('AK'), AF=col('AF'),AL=col('AL'), AG=col('AG'),AM=col('AM'),
-      AH=col('AH'),AN=col('AN'), AI=col('AI'),AO=col('AO'), W=col('W'), AC=col('AC');
+  var AE=col(LET.AI_DAI),AK=col(LET.FIX_DAI), AF=col(LET.AI_CHU),AL=col(LET.FIX_CHU),
+      AG=col(LET.AI_SHO),AM=col(LET.FIX_SHO), AH=col(LET.AI_SCENE),AN=col(LET.FIX_SCENE),
+      AI=col(LET.AI_CAUSE),AO=col(LET.FIX_CAUSE), W=col(storeLetter), AC=col(LET.AI_SUM);
 
   var rows = [];
   rows.push(['クレーム(ご意見)AI分類 精度検証', '', '', '']);
