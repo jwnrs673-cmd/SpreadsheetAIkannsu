@@ -63,7 +63,10 @@ function applyMainSheetFormulas() {
   var ui = SpreadsheetApp.getUi();
   var sh = ss.getSheetByName(SHEETS.CLAIM);
   if (!sh) {
-    ui.alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。\nConfig.gs の SHEETS.CLAIM を実際のシート名に合わせてください。');
+    var names = ss.getSheets().map(function (s) { return '・' + s.getName(); }).join('\n');
+    ui.alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。\n\n' +
+      'Config.gs の SHEETS.CLAIM を、下の実在シート名のどれかに正確に合わせてください' +
+      '（空白・全角半角も一致させる）。\n\n【このブック内のシート】\n' + names);
     return;
   }
   var res = ui.alert('メイン表への数式適用',
@@ -136,18 +139,28 @@ function setupMainSheet_(ss, sh) {
     sh.getRange(1, h.col).setValue(h.name).setFontWeight('bold').setBackground('#d9ead3');
   });
 
-  var last = getLastDataRow_(sh, COL.RAW); // AB(原文)で最終行を判定
-  if (last < 2) {
-    Logger.log('原文(AB)にデータが無いため数式は未設定');
-    SpreadsheetApp.getActive().toast('原文(AB列)にデータがありません。データ入力後に再実行してください。', 'クレームAI分類', 6);
-    return;
-  }
+  var lastData = getLastDataRow_(sh, COL.RAW); // AB(原文)で最終データ行を判定
+  var templateLast = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にも補助数式を入れる範囲
 
-  // FORMULA_TARGET_COLS の各列に、行ごとの数式を設定
+  // 補助列(結合文等)はテンプレとして空行にも入れる（IFで""になり安全）。
+  // AI列(=AI(単一セル))は原文がある行だけに入れる（AI("")防止）。
   FORMULA_TARGET_COLS.forEach(function (key) {
-    setColumnFormulas_(sh, COL[key], 2, last, buildFormula_.bind(null, key));
+    if (AI_COLS.indexOf(key) >= 0) {
+      if (lastData >= 2) setColumnFormulas_(sh, COL[key], 2, lastData, buildFormula_.bind(null, key));
+    } else {
+      setColumnFormulas_(sh, COL[key], 2, templateLast, buildFormula_.bind(null, key));
+    }
   });
-  Logger.log('メイン表に数式を設定: ' + (last - 1) + '行 × ' + FORMULA_TARGET_COLS.length + '列');
+
+  var msg;
+  if (lastData >= 2) {
+    msg = '数式を設定しました。AI列: 2〜' + lastData + '行 ／ 補助列: 2〜' + templateLast + '行。';
+  } else {
+    msg = '補助列のテンプレ数式を 2〜' + templateLast + '行に入れました。' +
+          'AB列(原文)に内容を入力し、もう一度②を実行するとAI列(AE〜AJ)も入ります。';
+  }
+  SpreadsheetApp.getActive().toast(msg, 'クレームAI分類', 8);
+  Logger.log('setupMainSheet_: ' + msg);
 }
 
 function setColumnFormulas_(sh, col, from, to, builder) {
@@ -279,8 +292,8 @@ function buildFormula_(key, r) {
 /* ============================ プルダウン ============================ */
 
 function setupValidations_(ss, sh) {
-  var last = getLastDataRow_(sh, COL.RAW);
-  if (last < 2) return;
+  var lastData = getLastDataRow_(sh, COL.RAW);
+  var last = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1); // 空行にもプルダウンを付ける
   var n = last - 1;
 
   applyListValidation_(sh, COL.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.DAI_LIST, 1));
