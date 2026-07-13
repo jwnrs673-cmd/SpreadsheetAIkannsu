@@ -1,41 +1,40 @@
 /**
  * Setup.gs
  * ------------------------------------------------------------------
- * シート作成・ヘッダ・マスター投入・数式設定・プルダウン設定・精度検証構築。
+ * シート作成・マスター投入・数式設定・プルダウン設定・精度検証構築。
  *
- * 【安全設計】
- *  - クレーム記録の A〜E（原文）と N/O/T/U/Y（人の確定値）は絶対に上書きしない。
- *  - 上書きするのは「システム管理列」の数式（F,G,H,I,J,K,L,M,P,Q,R,S,V,W,X）のみ。
- *  - マスターシートはシステム管理なので毎回作り直し（値を最新に保つ）。
- *  - 二重実行しても壊れない（ensureSheet_ で存在チェック、数式は再設定）。
+ * 【安全設計（★本番シート「シート9」対応）】
+ *  - メイン表で触れるのは FORMULA_TARGET_COLS の列（数式）と AK〜AO のプルダウンのみ。
+ *  - 原文AB・要約AC・確定AK〜AO(値)・PII(N/O/P)・社員/管理列(BB〜CI)は一切上書きしない。
+ *  - 小分類の補助列 CJ/CK を末尾に新設（既存列を1つもずらさない）。
+ *  - マスター系シートはシステム管理なので毎回最新化（メイン表とは別シート）。
+ *  - 二重実行しても壊れない。原文が無い行にはAI数式を入れない（AI("")防止）。
  * ------------------------------------------------------------------
  */
 
-/** どのシート・列を変更するかの事前サマリ（ログにも出す） */
+/** 変更内容の事前サマリ */
 const SETUP_PLAN = [
-  '【作成/更新するシート】',
-  '  ・クレーム記録        : ヘッダ(A〜Y) と 数式列(F,G,H,I,J,K,L,M,P,Q,R,S,V,W,X) を設定',
-  '  ・仕訳ルールマスター_大分類 : 全面投入',
-  '  ・仕訳ルールマスター_中分類 : 全面投入',
-  '  ・仕訳ルールマスター_小分類 : 全面投入（★準備済み小分類で置換可）',
-  '  ・発生場面マスター/ルール    : 全面投入',
-  '  ・原因分類マスター/ルール    : 全面投入',
-  '  ・大分類一覧          : 全面投入',
-  '  ・設定              : 全面投入',
-  '  ・精度検証           : 集計数式を設定',
-  '【触れない列】クレーム記録 A,B,C,D,E,N,O,T,U,Y（原文と確定値）'
+  '【マスター系シート（無ければ作成し最新化）】',
+  '  仕訳ルールマスター_大分類 / _中分類 / _小分類',
+  '  発生場面マスター / 発生場面ルールマスター',
+  '  原因分類マスター / 原因分類ルールマスター',
+  '  大分類一覧 / 設定 / 精度検証',
+  '',
+  '【メイン表「' + SHEETS.CLAIM + '」で触れる列だけ】',
+  '  数式を設定: AD, AP, AE, AQ, AR, AF, CJ(新), CK(新), AG, AS, AJ, AT, AH, AU, AI',
+  '  プルダウン: AK, AL, AM, AN, AO',
+  '  新ヘッダ追加: CJ=小分類候補文, CK=小分類用結合文',
+  '',
+  '【絶対に触れない列】AB(原文) / AC(要約) / AK〜AO(確定の値) / N,O,P(個人情報) / BB〜CI(社員・管理)'
 ];
 
 /* ============================ 実行エントリ ============================ */
 
-/**
- * すべてを初期構築する。メニュー「クレームAI分類」→「初期セットアップ」から実行。
- */
-function setupAll() {
+/** マスター系シートを構築（メイン表には触れない。安全）。 */
+function setupMasters() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   Logger.log(SETUP_PLAN.join('\n'));
   try {
-    // 1) マスター系（システム管理なので全面投入）
     writeMasterSheet_(ss, SHEETS.RULE_DAI,   MASTER_DAI);
     writeMasterSheet_(ss, SHEETS.RULE_CHU,   MASTER_CHU);
     writeMasterSheet_(ss, SHEETS.RULE_SHO,   MASTER_SHO);
@@ -45,58 +44,56 @@ function setupAll() {
     writeMasterSheet_(ss, SHEETS.CAUSE_RULE, MASTER_CAUSE_RULE);
     writeDaiList_(ss);
     writeConfigSheet_(ss);
-
-    // 2) クレーム記録（安全に：ヘッダと数式のみ）
-    setupClaimSheet_(ss);
-
-    // 3) プルダウン
-    setupValidations_(ss);
-
-    // 4) 精度検証
     setupAccuracySheet_(ss);
-
-    // 5) 設定シートに実行日時を記録
     stampConfig_(ss);
-
-    SpreadsheetApp.getActive().toast('初期セットアップが完了しました。', 'クレームAI分類', 5);
-    Logger.log('setupAll: 正常終了');
+    SpreadsheetApp.getActive().toast('マスター系シートを構築しました。', 'クレームAI分類', 5);
   } catch (e) {
-    Logger.log('setupAll: エラー ' + e + '\n' + (e.stack || ''));
-    SpreadsheetApp.getUi().alert('セットアップでエラー: ' + e.message);
+    Logger.log('setupMasters: エラー ' + e + '\n' + (e.stack || ''));
+    SpreadsheetApp.getUi().alert('マスター構築でエラー: ' + e.message);
     throw e;
   }
 }
 
 /**
- * 既存の全データ行に数式を（再）適用する。データを貼り付けた後に実行する。
- * メニュー「数式を全データ行へ適用」から実行。
+ * メイン表「シート9」に数式・プルダウンを適用する（確認ダイアログ付き）。
+ * マスターが未作成なら先に setupMasters を実行する。
  */
-function applyFormulasToAllRows() {
+function applyMainSheetFormulas() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var sh = ss.getSheetByName(SHEETS.CLAIM);
+  if (!sh) {
+    ui.alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。\nConfig.gs の SHEETS.CLAIM を実際のシート名に合わせてください。');
+    return;
+  }
+  var res = ui.alert('メイン表への数式適用',
+    '「' + SHEETS.CLAIM + '」の次の列だけを上書きします。\n' +
+    '数式: AD,AP,AE,AQ,AR,AF,CJ,CK,AG,AS,AJ,AT,AH,AU,AI\n' +
+    'プルダウン: AK〜AO\n' +
+    '（原文AB・要約AC・確定値・個人情報・社員/管理列には触れません）\n\n実行しますか？',
+    ui.ButtonSet.OK_CANCEL);
+  if (res !== ui.Button.OK) return;
+
   try {
-    setupClaimSheet_(ss);
-    setupValidations_(ss);
-    SpreadsheetApp.getActive().toast('数式を全データ行へ適用しました。', 'クレームAI分類', 5);
+    if (!ss.getSheetByName(SHEETS.RULE_CHU)) setupMasters(); // マスター未作成なら作る
+    setupMainSheet_(ss, sh);
+    setupValidations_(ss, sh);
+    SpreadsheetApp.getActive().toast('メイン表に数式・プルダウンを適用しました。', 'クレームAI分類', 5);
   } catch (e) {
-    Logger.log('applyFormulasToAllRows: エラー ' + e);
-    SpreadsheetApp.getUi().alert('数式適用でエラー: ' + e.message);
+    Logger.log('applyMainSheetFormulas: エラー ' + e + '\n' + (e.stack || ''));
+    ui.alert('数式適用でエラー: ' + e.message);
     throw e;
   }
 }
 
 /* ============================ シート基盤 ============================ */
 
-/** シートを取得（無ければ作成）。 */
 function ensureSheet_(ss, name) {
   var sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    Logger.log('シート作成: ' + name);
-  }
+  if (!sh) { sh = ss.insertSheet(name); Logger.log('シート作成: ' + name); }
   return sh;
 }
 
-/** マスターシートを全面投入（1行目=ヘッダ）。既存内容はクリアして最新化。 */
 function writeMasterSheet_(ss, name, data) {
   var sh = ensureSheet_(ss, name);
   sh.clearContents();
@@ -107,7 +104,6 @@ function writeMasterSheet_(ss, name, data) {
   Logger.log('マスター投入: ' + name + '（' + (data.length - 1) + '件）');
 }
 
-/** 大分類一覧シート（プルダウン用に11種の名称のみ）。 */
 function writeDaiList_(ss) {
   var names = MASTER_DAI.slice(1).map(function (r) { return [r[0]]; });
   var sh = ensureSheet_(ss, SHEETS.DAI_LIST);
@@ -115,10 +111,8 @@ function writeDaiList_(ss) {
   sh.getRange(1, 1, 1, 1).setValues([['大分類']]).setFontWeight('bold').setBackground('#e8eaed');
   sh.getRange(2, 1, names.length, 1).setValues(names);
   sh.setFrozenRows(1);
-  Logger.log('大分類一覧投入: ' + names.length + '件');
 }
 
-/** 設定シート。 */
 function writeConfigSheet_(ss) {
   var sh = ensureSheet_(ss, SHEETS.CONFIG);
   sh.clearContents();
@@ -127,59 +121,35 @@ function writeConfigSheet_(ss) {
   sh.autoResizeColumns(1, CONFIG_ROWS[0].length);
 }
 
-/** 設定シートに最終セットアップ日時を記録。 */
 function stampConfig_(ss) {
   var sh = ss.getSheetByName(SHEETS.CONFIG);
-  var finder = sh.createTextFinder('最終セットアップ日時').findNext();
-  if (finder) sh.getRange(finder.getRow(), 2).setValue(new Date());
+  var f = sh.createTextFinder('最終セットアップ日時').findNext();
+  if (f) sh.getRange(f.getRow(), 2).setValue(new Date());
 }
 
-/* ============================ クレーム記録 ============================ */
+/* ============================ メイン表 ============================ */
 
-/**
- * クレーム記録シートを安全に整備する。
- *  - ヘッダ(A〜Y)を設定
- *  - 数式列を設定（原文・確定列は触らない）
- */
-function setupClaimSheet_(ss) {
-  var sh = ensureSheet_(ss, SHEETS.CLAIM);
+/** メイン表に、許可された数式列だけを設定する（原文行のみ）。 */
+function setupMainSheet_(ss, sh) {
+  // 新規ヘッダ（CJ/CK）だけ設定（他のヘッダには触れない）
+  NEW_HEADERS.forEach(function (h) {
+    sh.getRange(1, h.col).setValue(h.name).setFontWeight('bold').setBackground('#d9ead3');
+  });
 
-  // ヘッダ
-  sh.getRange(1, 1, 1, CLAIM_HEADERS.length).setValues([CLAIM_HEADERS])
-    .setFontWeight('bold').setBackground('#d9ead3');
-  sh.setFrozenRows(1);
-
-  // データ最終行（E列=原文で判定）
-  var lastByE = getLastDataRow_(sh, COL.RAW);
-  var helperLast = Math.max(lastByE, LIMITS.CLAIM_FORMULA_ROWS + 1); // 補助数式はテンプレとして多めに
-  if (helperLast < 2) helperLast = 2;
-
-  // 補助/結合文の数式（空行はIFで""になる＝安全）を 2..helperLast に設定
-  setColumnFormulas_(sh, COL.AITEXT, 2, helperLast, buildFormula_.bind(null, 'F'));
-  setColumnFormulas_(sh, COL.G_DAI,  2, helperLast, buildFormula_.bind(null, 'G'));
-  setColumnFormulas_(sh, COL.I_CHU,  2, helperLast, buildFormula_.bind(null, 'I'));
-  setColumnFormulas_(sh, COL.J_CHU,  2, helperLast, buildFormula_.bind(null, 'J'));
-  setColumnFormulas_(sh, COL.L_REASON, 2, helperLast, buildFormula_.bind(null, 'L'));
-  setColumnFormulas_(sh, COL.P_SCENE, 2, helperLast, buildFormula_.bind(null, 'P'));
-  setColumnFormulas_(sh, COL.R_CAUSE, 2, helperLast, buildFormula_.bind(null, 'R'));
-  setColumnFormulas_(sh, COL.V_SHO,   2, helperLast, buildFormula_.bind(null, 'V'));
-  setColumnFormulas_(sh, COL.W_SHO,   2, helperLast, buildFormula_.bind(null, 'W'));
-
-  // AI関数は「原文がある行だけ」に設定（空行でAI("")を呼ばないため／コスト対策）
-  if (lastByE >= 2) {
-    setColumnFormulas_(sh, COL.AI_DAI,    2, lastByE, buildFormula_.bind(null, 'H'));
-    setColumnFormulas_(sh, COL.AI_CHU,    2, lastByE, buildFormula_.bind(null, 'K'));
-    setColumnFormulas_(sh, COL.AI_REASON, 2, lastByE, buildFormula_.bind(null, 'M'));
-    setColumnFormulas_(sh, COL.AI_SCENE,  2, lastByE, buildFormula_.bind(null, 'Q'));
-    setColumnFormulas_(sh, COL.AI_CAUSE,  2, lastByE, buildFormula_.bind(null, 'S'));
-    setColumnFormulas_(sh, COL.AI_SHO,    2, lastByE, buildFormula_.bind(null, 'X'));
-    Logger.log('AI数式を ' + (lastByE - 1) + ' 行へ設定');
-  } else {
-    Logger.log('原文データが無いためAI数式は未設定（データ投入後に「数式を全データ行へ適用」を実行）');
+  var last = getLastDataRow_(sh, COL.RAW); // AB(原文)で最終行を判定
+  if (last < 2) {
+    Logger.log('原文(AB)にデータが無いため数式は未設定');
+    SpreadsheetApp.getActive().toast('原文(AB列)にデータがありません。データ入力後に再実行してください。', 'クレームAI分類', 6);
+    return;
   }
+
+  // FORMULA_TARGET_COLS の各列に、行ごとの数式を設定
+  FORMULA_TARGET_COLS.forEach(function (key) {
+    setColumnFormulas_(sh, COL[key], 2, last, buildFormula_.bind(null, key));
+  });
+  Logger.log('メイン表に数式を設定: ' + (last - 1) + '行 × ' + FORMULA_TARGET_COLS.length + '列');
 }
 
-/** 指定列の from..to 行に、行ごとの数式を一括設定する。 */
 function setColumnFormulas_(sh, col, from, to, builder) {
   var n = to - from + 1;
   if (n <= 0) return;
@@ -188,7 +158,6 @@ function setColumnFormulas_(sh, col, from, to, builder) {
   sh.getRange(from, col, n, 1).setFormulas(arr);
 }
 
-/** 指定列で値が入っている最終行を返す（ヘッダ行1は含まない）。 */
 function getLastDataRow_(sh, col) {
   var last = sh.getLastRow();
   if (last < 2) return 1;
@@ -201,154 +170,106 @@ function getLastDataRow_(sh, col) {
 
 /* ============================ 数式ビルダー ============================ */
 /*
- * すべて「AI関数には単一セルのみ参照させる」方針。
- * 補助列(G/I/J/L/P/R/V/W)で結合文を作り、AI列(H/K/M/Q/S/X)は =AI(単一セル) だけ。
+ * AI列は必ず =AI(単一セル) のみ。結合文は通常関数で作りAIの外側に置く。
+ * 列参照は Config.gs の CL（列レター）を使用。
  */
-
-// シート範囲文字列を作るヘルパ
-function rng_(sheet, colFrom, colTo, rowFrom, rowTo) {
-  return "'" + sheet + "'!$" + colFrom + "$" + rowFrom + ":$" + colTo + "$" + rowTo;
-}
-
 function buildFormula_(key, r) {
-  var AIF = AI_FUNCTION_NAME; // 'AI' または 'Gemini'
+  var AIF = AI_FUNCTION_NAME;
   var NL = 'CHAR(10)';
 
-  // 大分類ルール範囲（A..E, 2..LIMITS.DAI）
-  var DAI_A = "'" + SHEETS.RULE_DAI + "'!$A$2:$A$" + LIMITS.DAI;
-  var DAI_B = "'" + SHEETS.RULE_DAI + "'!$B$2:$B$" + LIMITS.DAI;
-  var DAI_C = "'" + SHEETS.RULE_DAI + "'!$C$2:$C$" + LIMITS.DAI;
-  var DAI_D = "'" + SHEETS.RULE_DAI + "'!$D$2:$D$" + LIMITS.DAI;
-  var DAI_E = "'" + SHEETS.RULE_DAI + "'!$E$2:$E$" + LIMITS.DAI;
+  // マスター範囲
+  var D = SHEETS.RULE_DAI, Cn = SHEETS.RULE_CHU, Sn = SHEETS.RULE_SHO;
+  var DAI_A="'"+D+"'!$A$2:$A$"+LIMITS.DAI, DAI_B="'"+D+"'!$B$2:$B$"+LIMITS.DAI,
+      DAI_C="'"+D+"'!$C$2:$C$"+LIMITS.DAI, DAI_D="'"+D+"'!$D$2:$D$"+LIMITS.DAI,
+      DAI_E="'"+D+"'!$E$2:$E$"+LIMITS.DAI;
+  var CHU_A="'"+Cn+"'!$A$2:$A$"+LIMITS.CHU, CHU_B="'"+Cn+"'!$B$2:$B$"+LIMITS.CHU,
+      CHU_C="'"+Cn+"'!$C$2:$C$"+LIMITS.CHU, CHU_D="'"+Cn+"'!$D$2:$D$"+LIMITS.CHU,
+      CHU_E="'"+Cn+"'!$E$2:$E$"+LIMITS.CHU;
+  var SHO_A="'"+Sn+"'!$A$2:$A$"+LIMITS.SHO, SHO_B="'"+Sn+"'!$B$2:$B$"+LIMITS.SHO,
+      SHO_C="'"+Sn+"'!$C$2:$C$"+LIMITS.SHO, SHO_D="'"+Sn+"'!$D$2:$D$"+LIMITS.SHO,
+      SHO_E="'"+Sn+"'!$E$2:$E$"+LIMITS.SHO;
+  var SCN_A="'"+SHEETS.SCENE_M+"'!$A$2:$A$"+LIMITS.SCENE, SCN_B="'"+SHEETS.SCENE_M+"'!$B$2:$B$"+LIMITS.SCENE,
+      SCN_R="'"+SHEETS.SCENE_RULE+"'!$A$2:$A$"+LIMITS.SCENE;
+  var CAU_A="'"+SHEETS.CAUSE_M+"'!$A$2:$A$"+LIMITS.CAUSE, CAU_B="'"+SHEETS.CAUSE_M+"'!$B$2:$B$"+LIMITS.CAUSE,
+      CAU_R="'"+SHEETS.CAUSE_RULE+"'!$A$2:$A$"+LIMITS.CAUSE;
 
-  // 中分類マスター範囲（A大分類,B中分類,C定義,D入る例,E除外例）
-  var CHU = SHEETS.RULE_CHU;
-  var CHU_A = "'" + CHU + "'!$A$2:$A$" + LIMITS.CHU;
-  var CHU_B = "'" + CHU + "'!$B$2:$B$" + LIMITS.CHU;
-  var CHU_C = "'" + CHU + "'!$C$2:$C$" + LIMITS.CHU;
-  var CHU_D = "'" + CHU + "'!$D$2:$D$" + LIMITS.CHU;
-  var CHU_E = "'" + CHU + "'!$E$2:$E$" + LIMITS.CHU;
-
-  // 小分類マスター範囲（A大,B中,C小,D定義,E入る例,F除外例）
-  var SHO = SHEETS.RULE_SHO;
-  var SHO_A = "'" + SHO + "'!$A$2:$A$" + LIMITS.SHO;
-  var SHO_B = "'" + SHO + "'!$B$2:$B$" + LIMITS.SHO;
-  var SHO_C = "'" + SHO + "'!$C$2:$C$" + LIMITS.SHO;
-  var SHO_D = "'" + SHO + "'!$D$2:$D$" + LIMITS.SHO;
-  var SHO_E = "'" + SHO + "'!$E$2:$E$" + LIMITS.SHO;
-
-  // 発生場面
-  var SCN = SHEETS.SCENE_M;
-  var SCN_A = "'" + SCN + "'!$A$2:$A$" + LIMITS.SCENE;
-  var SCN_B = "'" + SCN + "'!$B$2:$B$" + LIMITS.SCENE;
-  var SCN_RULE = "'" + SHEETS.SCENE_RULE + "'!$A$2:$A$" + LIMITS.SCENE;
-
-  // 原因分類
-  var CAU = SHEETS.CAUSE_M;
-  var CAU_A = "'" + CAU + "'!$A$2:$A$" + LIMITS.CAUSE;
-  var CAU_B = "'" + CAU + "'!$B$2:$B$" + LIMITS.CAUSE;
-  var CAU_RULE = "'" + SHEETS.CAUSE_RULE + "'!$A$2:$A$" + LIMITS.CAUSE;
+  var AB=CL.RAW, AD=CL.AITEXT, AE=CL.AI_DAI, AF=CL.AI_CHU, AG=CL.AI_SHO, AH=CL.AI_SCENE,
+      AP=CL.G_DAI, AQ=CL.I_CHU, AR=CL.J_CHU, AS=CL.L_REASON, AT=CL.P_SCENE, AU=CL.R_CAUSE,
+      CJ=CL.V_SHO, CK=CL.W_SHO;
 
   switch (key) {
 
-    // F: 匿名化（GASカスタム関数）
-    case 'F':
-      return '=IF($E' + r + '="","",ANONYMIZE($E' + r + '))';
+    case 'AITEXT': // AD 匿名化
+      return '=IF($'+AB+r+'="","",ANONYMIZE($'+AB+r+'))';
 
-    // G: 大分類用結合文
-    case 'G':
-      return '=IF($F' + r + '="","",' +
-        '"あなたは食品スーパー・ディスカウントストアのクレーム分類担当です。次のクレーム内容を読み、下記の大分類候補の中から最も適切なものを1つだけ選び、候補の表記どおりに分類名のみを出力してください。説明・記号・前置きは不要です。"&' + NL + '&' +
-        '"【判定方針】お客様が最初に強く不満を持った主因で判定する。安易に接客・応対やその他へ寄せない。"&' + NL + '&' +
-        '"【大分類候補と定義】"&' + NL + '&' +
-        'TEXTJOIN(' + NL + ',TRUE,ARRAYFORMULA(IF(' + DAI_A + '="","","■"&' + DAI_A + '&"｜定義:"&' + DAI_B + '&"｜入る例:"&' + DAI_C + '&"｜しない例:"&' + DAI_D + '&"｜着眼点:"&' + DAI_E + ')))&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】大分類名を1つだけ。")';
+    case 'G_DAI': // AP 大分類用結合文
+      return '=IF($'+AD+r+'="","",' +
+        '"あなたは食品スーパー・ドラッグストアのご意見分類担当です。次のご意見を読み、下記の大分類候補から最も適切なものを1つだけ選び、候補の表記どおりに分類名のみを出力してください。説明・記号・前置きは不要です。"&'+NL+'&' +
+        '"【判定方針】お客様が最初に強く不満を持った主因で判定する。安易にその他へ寄せない。"&'+NL+'&' +
+        '"【大分類候補と定義】"&'+NL+'&' +
+        'TEXTJOIN('+NL+',TRUE,ARRAYFORMULA(IF('+DAI_A+'="","","■"&'+DAI_A+'&"｜定義:"&'+DAI_B+'&"｜入る例:"&'+DAI_C+'&"｜しない例:"&'+DAI_D+'&"｜着眼点:"&'+DAI_E+')))&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】大分類名を1つだけ。")';
 
-    // H: AI大分類（単一セルのみ）
-    case 'H':
-      return '=' + AIF + '($G' + r + ')';
+    case 'AI_DAI': // AE
+      return '='+AIF+'($'+AP+r+')';
 
-    // I: 中分類候補文（AI大分類でFILTER。範囲サイズは一致）
-    case 'I':
-      return '=IF($H' + r + '="","",' +
-        'TEXTJOIN(' + NL + ',TRUE,IFERROR(FILTER(' +
-        '"■"&' + CHU_B + '&"｜定義:"&' + CHU_C + '&"｜入る例:"&' + CHU_D + '&"｜しない例:"&' + CHU_E + ',' +
-        CHU_A + '=$H' + r + '),"")))';
+    case 'I_CHU': // AQ 中分類候補文（AI大分類でFILTER）
+      return '=IF($'+AE+r+'="","",' +
+        'TEXTJOIN('+NL+',TRUE,IFERROR(FILTER("■"&'+CHU_B+'&"｜定義:"&'+CHU_C+'&"｜入る例:"&'+CHU_D+'&"｜しない例:"&'+CHU_E+','+CHU_A+'=$'+AE+r+'),"")))';
 
-    // J: 中分類用結合文（候補・ルール・AI大分類・AI投入用テキスト）
-    case 'J':
-      return '=IF($I' + r + '="","",' +
-        '"次のクレーム内容について、指定された大分類に属する中分類候補の中から最も適切なものを1つだけ選び、候補の表記どおりに中分類名のみを出力してください。説明は不要です。"&' + NL + '&' +
-        '"【大分類】"&$H' + r + '&' + NL + '&' +
-        '"【中分類候補】"&' + NL + '&$I' + r + '&' + NL + '&' +
-        '"【判定の注意】従業員個人の爪・髪・制服・名札・清潔感の問題は身だしなみ不備。商品の異物混入や店舗全体の衛生は身だしなみ不備に含めない。"&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】中分類名を1つだけ。")';
+    case 'J_CHU': // AR 中分類用結合文
+      return '=IF($'+AQ+r+'="","",' +
+        '"次のご意見について、指定された大分類に属する中分類候補から最も適切なものを1つだけ選び、候補の表記どおりに中分類名のみを出力してください。説明は不要です。"&'+NL+'&' +
+        '"【大分類】"&$'+AE+r+'&'+NL+'&"【中分類候補】"&'+NL+'&$'+AQ+r+'&'+NL+'&' +
+        '"【判定の注意】従業員個人の爪・髪・制服・名札・清潔感の問題は接客態度(身だしなみ)。店舗の清掃・衛生はクリンリネス。"&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】中分類名を1つだけ。")';
 
-    // K: AI中分類
-    case 'K':
-      return '=' + AIF + '($J' + r + ')';
+    case 'AI_CHU': // AF
+      return '='+AIF+'($'+AR+r+')';
 
-    // V: 小分類候補文（AI大分類＋AI中分類でFILTER。2条件は同サイズ）
-    case 'V':
-      return '=IF(OR($H' + r + '="",$K' + r + '=""),"",' +
-        'TEXTJOIN(' + NL + ',TRUE,IFERROR(FILTER(' +
-        '"■"&' + SHO_C + '&"｜定義:"&' + SHO_D + '&"｜入る例:"&' + SHO_E + ',' +
-        SHO_A + '=$H' + r + ',' + SHO_B + '=$K' + r + '),"")))';
+    case 'V_SHO': // CJ 小分類候補文（大分類×中分類でFILTER）
+      return '=IF(OR($'+AE+r+'="",$'+AF+r+'=""),"",' +
+        'TEXTJOIN('+NL+',TRUE,IFERROR(FILTER("■"&'+SHO_C+'&"｜定義:"&'+SHO_D+'&"｜入る例:"&'+SHO_E+','+SHO_A+'=$'+AE+r+','+SHO_B+'=$'+AF+r+'),"")))';
 
-    // W: 小分類用結合文
-    case 'W':
-      return '=IF($V' + r + '="","",' +
-        '"次のクレーム内容について、指定された大分類・中分類に属する小分類候補の中から最も適切なものを1つだけ選び、候補の表記どおりに小分類名のみを出力してください。該当が無ければ最も近いものを選ぶ。説明は不要です。"&' + NL + '&' +
-        '"【大分類】"&$H' + r + '&"／【中分類】"&$K' + r + '&' + NL + '&' +
-        '"【小分類候補】"&' + NL + '&$V' + r + '&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】小分類名を1つだけ。")';
+    case 'W_SHO': // CK 小分類用結合文
+      return '=IF($'+CJ+r+'="","",' +
+        '"次のご意見について、指定された大分類・中分類に属する小分類候補から最も適切なものを1つだけ選び、候補の表記どおりに小分類名のみを出力してください。該当が無ければ最も近いものを選ぶ。説明は不要です。"&'+NL+'&' +
+        '"【大分類】"&$'+AE+r+'&"／【中分類】"&$'+AF+r+'&'+NL+'&"【小分類候補】"&'+NL+'&$'+CJ+r+'&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】小分類名を1つだけ。")';
 
-    // X: AI小分類
-    case 'X':
-      return '=' + AIF + '($W' + r + ')';
+    case 'AI_SHO': // AG
+      return '='+AIF+'($'+CK+r+')';
 
-    // L: AI理由用結合文
-    case 'L':
-      return '=IF($F' + r + '="","",' +
-        '"次のクレームが、なぜ下記の分類になるのかを40文字以内で簡潔に説明してください。分類名の列挙ではなく理由を述べる。"&' + NL + '&' +
-        '"【大分類】"&$H' + r + '&"／【中分類】"&$K' + r + '&"／【小分類】"&$X' + r + '&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】40文字以内の理由文。")';
+    case 'L_REASON': // AS 補助セル（AI理由用）
+      return '=IF($'+AD+r+'="","",' +
+        '"次のご意見が、なぜ下記の分類になるのかを40文字以内で簡潔に説明してください。分類名の列挙ではなく理由を述べる。"&'+NL+'&' +
+        '"【大分類】"&$'+AE+r+'&"／【中分類】"&$'+AF+r+'&"／【小分類】"&$'+AG+r+'&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】40文字以内の理由文。")';
 
-    // M: AI理由
-    case 'M':
-      return '=' + AIF + '($L' + r + ')';
+    case 'AI_REASON': // AJ
+      return '='+AIF+'($'+AS+r+')';
 
-    // P: 発生場面候補文
-    case 'P':
-      return '=IF($F' + r + '="","",' +
-        '"次のクレームで、お客様の不満が最初に強くなった発生場面を、下記候補から1つだけ選び候補の表記どおりに場面名のみ出力してください。説明は不要です。"&' + NL + '&' +
-        '"【発生場面候補】"&' + NL + '&TEXTJOIN(' + NL + ',TRUE,ARRAYFORMULA(IF(' + SCN_A + '="","","・"&' + SCN_A + '&IF(' + SCN_B + '=""," "," : "&' + SCN_B + '))))&' + NL + '&' +
-        '"【判定ルール】"&TEXTJOIN(" ",TRUE,' + SCN_RULE + ')&' + NL + '&' +
-        '"【参考】大分類:"&$H' + r + '&"／中分類:"&$K' + r + '&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】場面名を1つだけ。")';
+    case 'P_SCENE': // AT 発生場面候補文（結合文兼用）
+      return '=IF($'+AD+r+'="","",' +
+        '"次のご意見で、お客様の不満が最初に強くなった発生場面を、下記候補から1つだけ選び候補の表記どおりに場面名のみ出力してください。説明は不要です。"&'+NL+'&' +
+        '"【発生場面候補】"&'+NL+'&TEXTJOIN('+NL+',TRUE,ARRAYFORMULA(IF('+SCN_A+'="","","・"&'+SCN_A+'&IF('+SCN_B+'=""," "," : "&'+SCN_B+'))))&'+NL+'&' +
+        '"【判定ルール】"&TEXTJOIN(" ",TRUE,'+SCN_R+')&'+NL+'&' +
+        '"【参考】大分類:"&$'+AE+r+'&"／中分類:"&$'+AF+r+'&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】場面名を1つだけ。")';
 
-    // Q: AI発生場面
-    case 'Q':
-      return '=' + AIF + '($P' + r + ')';
+    case 'AI_SCENE': // AH
+      return '='+AIF+'($'+AT+r+')';
 
-    // R: 原因分類候補文
-    case 'R':
-      return '=IF($F' + r + '="","",' +
-        '"次のクレームについて、顧客が訴えた表面的な不満ではなく社内として直すべき背景要因を、下記候補から1つだけ選び候補の表記どおりに原因名のみ出力してください。説明は不要です。"&' + NL + '&' +
-        '"【原因分類候補】"&' + NL + '&TEXTJOIN(' + NL + ',TRUE,ARRAYFORMULA(IF(' + CAU_A + '="","","・"&' + CAU_A + '&IF(' + CAU_B + '=""," "," : "&' + CAU_B + '))))&' + NL + '&' +
-        '"【判定ルール】"&TEXTJOIN(" ",TRUE,' + CAU_RULE + ')&' + NL + '&' +
-        '"【参考】大分類:"&$H' + r + '&"／中分類:"&$K' + r + '&"／発生場面:"&$Q' + r + '&' + NL + '&' +
-        '"【クレーム内容】"&' + NL + '&$F' + r + '&' + NL + '&' +
-        '"【出力形式】原因名を1つだけ。")';
+    case 'R_CAUSE': // AU 原因分類候補文（結合文兼用）
+      return '=IF($'+AD+r+'="","",' +
+        '"次のご意見について、表面的な不満ではなく社内として直すべき背景要因を、下記候補から1つだけ選び候補の表記どおりに原因名のみ出力してください。説明は不要です。"&'+NL+'&' +
+        '"【原因分類候補】"&'+NL+'&TEXTJOIN('+NL+',TRUE,ARRAYFORMULA(IF('+CAU_A+'="","","・"&'+CAU_A+'&IF('+CAU_B+'=""," "," : "&'+CAU_B+'))))&'+NL+'&' +
+        '"【判定ルール】"&TEXTJOIN(" ",TRUE,'+CAU_R+')&'+NL+'&' +
+        '"【参考】大分類:"&$'+AE+r+'&"／中分類:"&$'+AF+r+'&"／発生場面:"&$'+AH+r+'&'+NL+'&' +
+        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】原因名を1つだけ。")';
 
-    // S: AI原因分類
-    case 'S':
-      return '=' + AIF + '($R' + r + ')';
+    case 'AI_CAUSE': // AI
+      return '='+AIF+'($'+AU+r+')';
 
     default:
       throw new Error('未知の数式キー: ' + key);
@@ -357,44 +278,30 @@ function buildFormula_(key, r) {
 
 /* ============================ プルダウン ============================ */
 
-/**
- * 確定列（N,O,T,U,Y）にプルダウンを設定する。
- * 依存プルダウンは onEdit（Code.gs）で任意対応。ここでは全件リストで確実に動く形にする。
- */
-function setupValidations_(ss) {
-  var sh = ss.getSheetByName(SHEETS.CLAIM);
-  var rows = Math.max(getLastDataRow_(sh, COL.RAW), LIMITS.CLAIM_FORMULA_ROWS + 1);
-  if (rows < 2) rows = 2;
-  var n = rows - 1;
+function setupValidations_(ss, sh) {
+  var last = getLastDataRow_(sh, COL.RAW);
+  if (last < 2) return;
+  var n = last - 1;
 
-  // 各マスターの実データ範囲
-  var daiRange   = rangeOfColumn_(ss, SHEETS.DAI_LIST, 1, 1);   // 大分類一覧 A
-  var chuRange   = rangeOfColumn_(ss, SHEETS.RULE_CHU, 2, 1);   // 中分類 B
-  var shoRange   = rangeOfColumn_(ss, SHEETS.RULE_SHO, 3, 1);   // 小分類 C
-  var sceneRange = rangeOfColumn_(ss, SHEETS.SCENE_M, 1, 1);    // 発生場面 A
-  var causeRange = rangeOfColumn_(ss, SHEETS.CAUSE_M, 1, 1);    // 原因分類 A
-
-  applyListValidation_(sh, COL.FIX_DAI,   2, n, daiRange);
-  applyListValidation_(sh, COL.FIX_CHU,   2, n, chuRange);
-  applyListValidation_(sh, COL.FIX_SCENE, 2, n, sceneRange);
-  applyListValidation_(sh, COL.FIX_CAUSE, 2, n, causeRange);
-  applyListValidation_(sh, COL.FIX_SHO,   2, n, shoRange);
+  applyListValidation_(sh, COL.FIX_DAI,   2, n, rangeOfColumn_(ss, SHEETS.DAI_LIST, 1));
+  applyListValidation_(sh, COL.FIX_CHU,   2, n, rangeOfColumn_(ss, SHEETS.RULE_CHU, 2));
+  applyListValidation_(sh, COL.FIX_SHO,   2, n, rangeOfColumn_(ss, SHEETS.RULE_SHO, 3));
+  applyListValidation_(sh, COL.FIX_SCENE, 2, n, rangeOfColumn_(ss, SHEETS.SCENE_M, 1));
+  applyListValidation_(sh, COL.FIX_CAUSE, 2, n, rangeOfColumn_(ss, SHEETS.CAUSE_M, 1));
   Logger.log('プルダウン設定完了（' + n + '行）');
 }
 
-/** マスターシートの指定列の実データ範囲を返す（ヘッダ除く）。 */
-function rangeOfColumn_(ss, sheetName, col, startOffsetRow) {
+function rangeOfColumn_(ss, sheetName, col) {
   var sh = ss.getSheetByName(sheetName);
   var last = getLastDataRow_(sh, col);
   if (last < 2) last = 2;
   return sh.getRange(2, col, last - 1, 1);
 }
 
-/** 指定列にリスト（範囲参照）のデータ検証を設定。 */
 function applyListValidation_(sh, col, from, count, sourceRange) {
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInRange(sourceRange, true)
-    .setAllowInvalid(true) // AIの表記揺れを手修正できるよう警告のみ
+    .setAllowInvalid(true) // 表記揺れを手修正できるよう警告のみ
     .build();
   sh.getRange(from, col, count, 1).setDataValidation(rule);
 }
@@ -405,80 +312,63 @@ function setupAccuracySheet_(ss) {
   var sh = ensureSheet_(ss, SHEETS.ACCURACY);
   sh.clearContents();
   var C = "'" + SHEETS.CLAIM + "'";
-  var R = 1000; // 集計対象の上限行
+  var R = LIMITS.ACC;
+  function col(letter){ return C + '!$' + letter + '$2:$' + letter + '$' + R; }
 
-  // 列レター（クレーム記録）
-  var H = C + '!$H$2:$H$' + R, N = C + '!$N$2:$N$' + R; // 大分類 AI/確定
-  var K = C + '!$K$2:$K$' + R, O = C + '!$O$2:$O$' + R; // 中分類
-  var X = C + '!$X$2:$X$' + R, Y = C + '!$Y$2:$Y$' + R; // 小分類
-  var Q = C + '!$Q$2:$Q$' + R, T = C + '!$T$2:$T$' + R; // 発生場面
-  var S = C + '!$S$2:$S$' + R, U = C + '!$U$2:$U$' + R; // 原因分類
+  var AE=col('AE'),AK=col('AK'), AF=col('AF'),AL=col('AL'), AG=col('AG'),AM=col('AM'),
+      AH=col('AH'),AN=col('AN'), AI=col('AI'),AO=col('AO'), W=col('W'), AC=col('AC');
 
   var rows = [];
-  rows.push(['クレームAI分類 精度検証', '', '', '']);
+  rows.push(['クレーム(ご意見)AI分類 精度検証', '', '', '']);
   rows.push(['', '', '', '']);
   rows.push(['分類軸', '確定済み件数', '一致件数', '一致率']);
 
-  // 一致率行（AI vs 確定、確定が入っている行のみ対象）
   function accRow(label, ai, fix) {
-    var target = '=SUMPRODUCT((' + fix + '<>"")*1)';
-    var match  = '=SUMPRODUCT((' + ai + '=' + fix + ')*(' + fix + '<>""))';
-    var rate   = '=IFERROR(C{ROW}/B{ROW},"-")';
-    return [label, target, match, rate];
+    return [label,
+      '=SUMPRODUCT(('+fix+'<>"")*1)',
+      '=SUMPRODUCT(('+ai+'='+fix+')*('+fix+'<>""))',
+      '=IFERROR(C{ROW}/B{ROW},"-")'];
   }
-  rows.push(accRow('大分類', H, N));
-  rows.push(accRow('中分類', K, O));
-  rows.push(accRow('小分類', X, Y));
-  rows.push(accRow('発生場面', Q, T));
-  rows.push(accRow('原因分類', S, U));
+  rows.push(accRow('大分類', AE, AK));
+  rows.push(accRow('中分類', AF, AL));
+  rows.push(accRow('小分類', AG, AM));
+  rows.push(accRow('発生場面', AH, AN));
+  rows.push(accRow('原因分類', AI, AO));
 
   rows.push(['', '', '', '']);
   rows.push(['偏りチェック（AI大分類）', 'AI件数', '全体に対する割合', '']);
-  rows.push(['接客・応対への偏り',
-    '=COUNTIF(' + H + ',"接客・応対")',
-    '=IFERROR(B{ROW}/COUNTA(' + H + '),"-")', '']);
-  rows.push(['その他への偏り',
-    '=COUNTIF(' + H + ',"その他")',
-    '=IFERROR(B{ROW}/COUNTA(' + H + '),"-")', '']);
+  rows.push(['レジ接客への偏り',   '=COUNTIF('+AE+',"レジ接客")',   '=IFERROR(B{ROW}/COUNTA('+AE+'),"-")', '']);
+  rows.push(['外周り接客への偏り', '=COUNTIF('+AE+',"外周り接客")', '=IFERROR(B{ROW}/COUNTA('+AE+'),"-")', '']);
+  rows.push(['その他への偏り',     '=COUNTIF('+AE+',"その他")',     '=IFERROR(B{ROW}/COUNTA('+AE+'),"-")', '']);
 
-  // 書き込み（{ROW} を実行時の行番号へ置換）
-  var startRow = 1;
   var values = rows.map(function (row, i) {
-    var rowNo = startRow + i;
+    var rowNo = 1 + i;
     return row.map(function (cell) {
       return (typeof cell === 'string') ? cell.replace(/\{ROW\}/g, rowNo) : cell;
     });
   });
-  sh.getRange(startRow, 1, values.length, 4).setValues(values);
+  sh.getRange(1, 1, values.length, 4).setValues(values);
 
-  // 見出し装飾
   sh.getRange(1, 1).setFontWeight('bold').setFontSize(14);
   sh.getRange(3, 1, 1, 4).setFontWeight('bold').setBackground('#e8eaed');
   sh.getRange(4, 4, 5, 1).setNumberFormat('0.0%');
-  sh.getRange(10, 3, 3, 1).setNumberFormat('0.0%');
+  sh.getRange(11, 3, 3, 1).setNumberFormat('0.0%');
 
-  // 誤分類一覧（大分類）: 確定があり AI≠確定 の行を抽出
-  var listTop = values.length + 3;
-  sh.getRange(listTop, 1).setValue('■ 大分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
-  sh.getRange(listTop + 1, 1, 1, 4).setValues([['受付No', 'クレーム内容原文', 'AI大分類', '確定大分類']])
+  // 誤分類一覧（大分類）: 左 A〜D
+  var top = values.length + 3;
+  sh.getRange(top, 1).setValue('■ 大分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
+  sh.getRange(top + 1, 1, 1, 4).setValues([['店名', '内容(要約)', 'AI大分類', '確定大分類']])
     .setFontWeight('bold').setBackground('#f4cccc');
-  var A = C + '!$A$2:$A$' + R, E = C + '!$E$2:$E$' + R;
-  var filterFormula =
-    '=IFERROR(FILTER({' + A + ',' + E + ',' + H + ',' + N + '},' +
-    '(' + N + '<>"")*(' + H + '<>' + N + ')),"（不一致なし）")';
-  sh.getRange(listTop + 2, 1).setFormula(filterFormula);
+  sh.getRange(top + 2, 1).setFormula(
+    '=IFERROR(FILTER({'+W+','+AC+','+AE+','+AK+'},('+AK+'<>"")*('+AE+'<>'+AK+')),"（不一致なし）")');
 
-  // 中分類 誤分類一覧（縦に伸びるFILTER同士が衝突しないよう F〜I 列へ横並び配置）
-  sh.getRange(listTop, 6).setValue('■ 中分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
-  sh.getRange(listTop + 1, 6, 1, 4).setValues([['受付No', 'クレーム内容原文', 'AI中分類', '確定中分類']])
+  // 誤分類一覧（中分類）: 右 F〜I（縦スピル衝突回避）
+  sh.getRange(top, 6).setValue('■ 中分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
+  sh.getRange(top + 1, 6, 1, 4).setValues([['店名', '内容(要約)', 'AI中分類', '確定中分類']])
     .setFontWeight('bold').setBackground('#f4cccc');
-  var filterFormula2 =
-    '=IFERROR(FILTER({' + A + ',' + E + ',' + K + ',' + O + '},' +
-    '(' + O + '<>"")*(' + K + '<>' + O + ')),"（不一致なし）")';
-  sh.getRange(listTop + 2, 6).setFormula(filterFormula2);
+  sh.getRange(top + 2, 6).setFormula(
+    '=IFERROR(FILTER({'+W+','+AC+','+AF+','+AL+'},('+AL+'<>"")*('+AF+'<>'+AL+')),"（不一致なし）")');
 
-  sh.autoResizeColumns(1, 4);
-  sh.setColumnWidth(2, 320);
-  sh.setColumnWidth(7, 320);
+  sh.setColumnWidth(2, 320); sh.setColumnWidth(7, 320);
   Logger.log('精度検証シート構築完了');
 }
