@@ -1,0 +1,4 @@
+キー,値,説明
+AI関数名,AI,=AI() か =Gemini() か。Config.gs の AI_FUNCTION_NAME と揃える
+数式初期投入行数,200,クレーム記録に数式を入れる行数
+最終セットアップ日時,,setupAll 実行時に自動記録
