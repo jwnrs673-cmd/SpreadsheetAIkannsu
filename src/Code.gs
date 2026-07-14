@@ -14,6 +14,7 @@ function onOpen() {
     .addItem('② メイン表に数式・プルダウンを適用', 'applyMainSheetFormulas')
     .addSeparator()
     .addItem('確定プルダウンを絞り込み直す（全行）', 'refreshDependentDropdowns')
+    .addItem('店番から店舗情報を一括補完（全行）', 'fillAllStoreInfo')
     .addSeparator()
     .addItem('テストデータを投入（5ケース）', 'insertTestCases')
     .addItem('変更内容（計画）を表示', 'showSetupPlan')
@@ -65,6 +66,14 @@ function onEdit(e) {
     if (c1 <= COLX.RAW && COLX.RAW <= c2) {
       autoFillRows_(sh, Math.max(r1, 2), r2, res);
     }
+
+    // 1.5) 店番が編集範囲に含まれる → 店舗情報(店名/営業統括部/営業部/ブロック/エリア)を補完
+    try {
+      var keyColS = headerIndexMap_(sh).map[normHeader_(STORE_KEY_HEADER)];
+      if (keyColS && c1 <= keyColS && keyColS <= c2) {
+        fillStoreInfoRows_(ss, sh, Math.max(r1, 2), r2);
+      }
+    } catch (e3) { Logger.log('店舗補完: ' + e3); }
 
     // 2)(3) 確定プルダウンの依存絞り込み（単一セル編集時のみ）
     if (e.range.getNumRows() === 1 && e.range.getNumColumns() === 1 && r1 >= 2) {

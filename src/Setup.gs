@@ -496,6 +496,97 @@ function applyListValidation_(sh, col, from, count, sourceRange) {
   sh.getRange(from, col, count, 1).setDataValidation(rule);
 }
 
+/* ============================ 店番→店舗情報の補完 ============================ */
+
+/** 店番を突合用に正規化（数字のみなら4桁ゼロ埋め。先頭ゼロの取りこぼしを防ぐ）。 */
+function normStoreNo_(v) {
+  var s = String(v == null ? '' : v).trim();
+  if (s === '') return '';
+  if (/^\d+$/.test(s)) return s.length < 4 ? ('0000' + s).slice(-4) : s;
+  return s;
+}
+
+/**
+ * 店舗マスタから {正規化店番: {見出し: 値, ...}} の対応表を作る。
+ * 店舗マスタが無い/キー列が無い場合は null。
+ */
+function buildStoreLookup_(ss) {
+  var st = ss.getSheetByName(SHEETS.STORE);
+  if (!st) return null;
+  var hi = headerIndexMap_(st);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) return null;
+
+  var srcCol = {};
+  STORE_FILL_HEADERS.forEach(function (h) {
+    var c = hi.map[normHeader_(h)];
+    if (c) srcCol[h] = c;
+  });
+
+  var last = getLastDataRow_(st, keyCol);
+  if (last < 2) return {};
+  var data = st.getRange(2, 1, last - 1, st.getLastColumn()).getValues();
+  var map = {};
+  for (var i = 0; i < data.length; i++) {
+    var no = normStoreNo_(data[i][keyCol - 1]);
+    if (no === '') continue;
+    var rec = {};
+    STORE_FILL_HEADERS.forEach(function (h) { if (srcCol[h]) rec[h] = data[i][srcCol[h] - 1]; });
+    map[no] = rec;
+  }
+  return map;
+}
+
+/**
+ * 受付表の from..to 行について、店番から店舗情報(値)を書き込む。
+ *  - 店番が空/店舗マスタに該当なしの行は既存値を維持（触れない）。
+ *  - dest列は見出しで解決するので列の並び替えに強い。列単位のバッチ書き込みで高速。
+ */
+function fillStoreInfoRows_(ss, sh, from, to) {
+  if (to < from) return;
+  var lookup = buildStoreLookup_(ss);
+  if (!lookup) return; // 店舗マスタ無し → 何もしない（分類機能は止めない）
+
+  var hi = headerIndexMap_(sh);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) return;
+
+  var n = to - from + 1;
+  var keys = sh.getRange(from, keyCol, n, 1).getValues();
+
+  STORE_FILL_HEADERS.forEach(function (h) {
+    var col = hi.map[normHeader_(h)];
+    if (!col) return; // 受付表に該当見出しが無ければスキップ
+    var cur = sh.getRange(from, col, n, 1).getValues(); // 既存値を保持
+    var changed = false;
+    for (var i = 0; i < n; i++) {
+      var no = normStoreNo_(keys[i][0]);
+      if (no === '') continue;
+      var rec = lookup[no];
+      if (!rec) continue;
+      var v = rec[h];
+      if (v !== undefined && v !== '' && cur[i][0] !== v) { cur[i][0] = v; changed = true; }
+    }
+    if (changed) sh.getRange(from, col, n, 1).setValues(cur);
+  });
+}
+
+/** 全データ行の店舗情報を店番から一括補完（インポート後などに使用）。 */
+function fillAllStoreInfo() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var sh = ss.getSheetByName(SHEETS.CLAIM);
+  if (!sh) { ui.alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。'); return; }
+  if (!ss.getSheetByName(SHEETS.STORE)) { ui.alert('「' + SHEETS.STORE + '」シートが見つかりません。'); return; }
+  var hi = headerIndexMap_(sh);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) { ui.alert('受付表に「' + STORE_KEY_HEADER + '」列（見出し）が見つかりません。'); return; }
+  var last = getLastDataRow_(sh, keyCol);
+  if (last < 2) { SpreadsheetApp.getActive().toast('店番が入力された行がありません。', 'クレームAI分類', 5); return; }
+  fillStoreInfoRows_(ss, sh, 2, last);
+  SpreadsheetApp.getActive().toast('店舗情報を補完しました（' + (last - 1) + '行）。', 'クレームAI分類', 5);
+}
+
 /* ============================ 精度検証 ============================ */
 
 function setupAccuracySheet_(ss) {

@@ -34,8 +34,18 @@ const SHEETS = {
   CAUSE_RULE:   '原因分類ルールマスター',
   DAI_LIST:     '大分類一覧',
   CONFIG:       '設定',
-  ACCURACY:     '精度検証'
+  ACCURACY:     '精度検証',
+  STORE:        '店舗マスタ'   // ★ユーザー管理（システムは読むだけ・作成/上書きしない）
 };
+
+/**
+ * ★店番→店舗情報の自動補完設定。
+ *  受付表(ご意見記録)の「店番」に入力すると、店舗マスタから下記の見出しの値を
+ *  受付表の同名見出し列へ"値で"書き込む（記録として凍結）。
+ *  受付表・店舗マスタの両方に、下記の見出し名が存在すればそのまま動く（列の並びは不問）。
+ */
+const STORE_KEY_HEADER = '店番'; // 突合キー（受付表・店舗マスタ共通の見出し）
+const STORE_FILL_HEADERS = ['店名', '営業統括部', '営業部', 'ブロック', 'エリア'];
 
 /**
  * AI関数名。環境により =AI() / =Gemini()。ここだけ差し替える。
@@ -1028,6 +1038,97 @@ function applyListValidation_(sh, col, from, count, sourceRange) {
   sh.getRange(from, col, count, 1).setDataValidation(rule);
 }
 
+/* ============================ 店番→店舗情報の補完 ============================ */
+
+/** 店番を突合用に正規化（数字のみなら4桁ゼロ埋め。先頭ゼロの取りこぼしを防ぐ）。 */
+function normStoreNo_(v) {
+  var s = String(v == null ? '' : v).trim();
+  if (s === '') return '';
+  if (/^\d+$/.test(s)) return s.length < 4 ? ('0000' + s).slice(-4) : s;
+  return s;
+}
+
+/**
+ * 店舗マスタから {正規化店番: {見出し: 値, ...}} の対応表を作る。
+ * 店舗マスタが無い/キー列が無い場合は null。
+ */
+function buildStoreLookup_(ss) {
+  var st = ss.getSheetByName(SHEETS.STORE);
+  if (!st) return null;
+  var hi = headerIndexMap_(st);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) return null;
+
+  var srcCol = {};
+  STORE_FILL_HEADERS.forEach(function (h) {
+    var c = hi.map[normHeader_(h)];
+    if (c) srcCol[h] = c;
+  });
+
+  var last = getLastDataRow_(st, keyCol);
+  if (last < 2) return {};
+  var data = st.getRange(2, 1, last - 1, st.getLastColumn()).getValues();
+  var map = {};
+  for (var i = 0; i < data.length; i++) {
+    var no = normStoreNo_(data[i][keyCol - 1]);
+    if (no === '') continue;
+    var rec = {};
+    STORE_FILL_HEADERS.forEach(function (h) { if (srcCol[h]) rec[h] = data[i][srcCol[h] - 1]; });
+    map[no] = rec;
+  }
+  return map;
+}
+
+/**
+ * 受付表の from..to 行について、店番から店舗情報(値)を書き込む。
+ *  - 店番が空/店舗マスタに該当なしの行は既存値を維持（触れない）。
+ *  - dest列は見出しで解決するので列の並び替えに強い。列単位のバッチ書き込みで高速。
+ */
+function fillStoreInfoRows_(ss, sh, from, to) {
+  if (to < from) return;
+  var lookup = buildStoreLookup_(ss);
+  if (!lookup) return; // 店舗マスタ無し → 何もしない（分類機能は止めない）
+
+  var hi = headerIndexMap_(sh);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) return;
+
+  var n = to - from + 1;
+  var keys = sh.getRange(from, keyCol, n, 1).getValues();
+
+  STORE_FILL_HEADERS.forEach(function (h) {
+    var col = hi.map[normHeader_(h)];
+    if (!col) return; // 受付表に該当見出しが無ければスキップ
+    var cur = sh.getRange(from, col, n, 1).getValues(); // 既存値を保持
+    var changed = false;
+    for (var i = 0; i < n; i++) {
+      var no = normStoreNo_(keys[i][0]);
+      if (no === '') continue;
+      var rec = lookup[no];
+      if (!rec) continue;
+      var v = rec[h];
+      if (v !== undefined && v !== '' && cur[i][0] !== v) { cur[i][0] = v; changed = true; }
+    }
+    if (changed) sh.getRange(from, col, n, 1).setValues(cur);
+  });
+}
+
+/** 全データ行の店舗情報を店番から一括補完（インポート後などに使用）。 */
+function fillAllStoreInfo() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var sh = ss.getSheetByName(SHEETS.CLAIM);
+  if (!sh) { ui.alert('メイン表「' + SHEETS.CLAIM + '」が見つかりません。'); return; }
+  if (!ss.getSheetByName(SHEETS.STORE)) { ui.alert('「' + SHEETS.STORE + '」シートが見つかりません。'); return; }
+  var hi = headerIndexMap_(sh);
+  var keyCol = hi.map[normHeader_(STORE_KEY_HEADER)];
+  if (!keyCol) { ui.alert('受付表に「' + STORE_KEY_HEADER + '」列（見出し）が見つかりません。'); return; }
+  var last = getLastDataRow_(sh, keyCol);
+  if (last < 2) { SpreadsheetApp.getActive().toast('店番が入力された行がありません。', 'クレームAI分類', 5); return; }
+  fillStoreInfoRows_(ss, sh, 2, last);
+  SpreadsheetApp.getActive().toast('店舗情報を補完しました（' + (last - 1) + '行）。', 'クレームAI分類', 5);
+}
+
 /* ============================ 精度検証 ============================ */
 
 function setupAccuracySheet_(ss) {
@@ -1130,6 +1231,7 @@ function onOpen() {
     .addItem('② メイン表に数式・プルダウンを適用', 'applyMainSheetFormulas')
     .addSeparator()
     .addItem('確定プルダウンを絞り込み直す（全行）', 'refreshDependentDropdowns')
+    .addItem('店番から店舗情報を一括補完（全行）', 'fillAllStoreInfo')
     .addSeparator()
     .addItem('テストデータを投入（5ケース）', 'insertTestCases')
     .addItem('変更内容（計画）を表示', 'showSetupPlan')
@@ -1181,6 +1283,14 @@ function onEdit(e) {
     if (c1 <= COLX.RAW && COLX.RAW <= c2) {
       autoFillRows_(sh, Math.max(r1, 2), r2, res);
     }
+
+    // 1.5) 店番が編集範囲に含まれる → 店舗情報(店名/営業統括部/営業部/ブロック/エリア)を補完
+    try {
+      var keyColS = headerIndexMap_(sh).map[normHeader_(STORE_KEY_HEADER)];
+      if (keyColS && c1 <= keyColS && keyColS <= c2) {
+        fillStoreInfoRows_(ss, sh, Math.max(r1, 2), r2);
+      }
+    } catch (e3) { Logger.log('店舗補完: ' + e3); }
 
     // 2)(3) 確定プルダウンの依存絞り込み（単一セル編集時のみ）
     if (e.range.getNumRows() === 1 && e.range.getNumColumns() === 1 && r1 >= 2) {
