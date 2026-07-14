@@ -349,8 +349,18 @@ function buildFormula_(key, r) {
 
   switch (key) {
 
-    case 'AITEXT': // AD 匿名化
-      return '=IF($'+AB+r+'="","",ANONYMIZE($'+AB+r+'))';
+    case 'AITEXT': // AD 匿名化（カスタム関数に依存しない純粋数式＝スクリプト不具合の影響を受けない）
+      return '=IF($'+AB+r+'="","",' +
+        'REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(' +
+        '$'+AB+r+',' +
+        '"[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}","[メール]"),' +
+        '"https?://[^\\s　、。]+","[URL]"),' +
+        '"〒?\\s?\\d{3}[-－]\\d{4}","[郵便番号]"),' +
+        '"0\\d{1,4}[-－(（]?\\d{1,4}[-－)）]?\\d{3,4}","[電話番号]"),' +
+        '"(会員番号|会員No|注文番号|受注番号|レシート番号|伝票番号)[ 　]*[:：]?[ 　]*[A-Za-z0-9\\-－]{3,}","$1：[番号]"),' +
+        '"(氏名|お名前|お客様名|顧客名|名前)[ 　]*[:：][ 　]*[^ 　、。]{1,20}","$1：[氏名]"),' +
+        '"(ご住所|住所|お届け先|届け先)[ 　]*[:：][ 　]*[^ 　、。]{1,40}","$1：[住所]"),' +
+        '"\\d{7,}","[番号]"))';
 
     case 'SUM_TXT': // CL 要約用結合文（AC=AI要約の入力プロンプト）
       return '=IF($'+AD+r+'="","",' +
