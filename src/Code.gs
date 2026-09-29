@@ -26,13 +26,20 @@ function onOpen() {
 
 /** 本システム「クレームAI分類」メニューを構築。 */
 function buildClaimAiMenu_() {
-  SpreadsheetApp.getUi()
-    .createMenu('クレームAI分類')
+  var ui = SpreadsheetApp.getUi();
+  var pfMenu = ui.createMenu('段落整形（AC列）')
+    .addItem('選択行の原文一致チェック', 'pfCheckSelectedRows')
+    .addItem('選択行から会議用シートを作成', 'pfBuildMeetingSheet')
+    .addItem('表示を再調整（列幅・折り返し）', 'pfAdjustDisplay')
+    .addItem('段落整形設定シートを開く', 'pfOpenSettings');
+  ui.createMenu('クレームAI分類')
     .addItem('① マスター系シートを作成/更新', 'setupMasters')
     .addItem('② メイン表に数式・プルダウンを適用', 'applyMainSheetFormulas')
     .addSeparator()
     .addItem('確定プルダウンを絞り込み直す（全行）', 'refreshDependentDropdowns')
     .addItem('店番から店舗情報を一括補完（全行）', 'fillAllStoreInfo')
+    .addSeparator()
+    .addSubMenu(pfMenu)
     .addSeparator()
     .addItem('テストデータを投入（5ケース）', 'insertTestCases')
     .addItem('変更内容（計画）を表示', 'showSetupPlan')
@@ -61,7 +68,7 @@ function refreshDependentDropdowns() {
 
 /**
  * メイン表の編集トリガ（自動化の要）。
- *  1) AB(原文)を入力/貼付 → その行に全数式を自動反映（AI分類が自動で走る）
+ *  1) AB(原文)を入力/貼付 → その行に全数式を自動反映（AI分類・段落整形の数式が入る）
  *  2) AK(確定大分類)を選ぶ → AL(確定中分類)候補を絞る
  *  3) AL(確定中分類)を選ぶ → AM(確定小分類)候補を絞る
  * 簡易トリガのため追加の権限設定は不要。失敗しても運用は止まらない。
@@ -116,16 +123,21 @@ function onEdit(e) {
 function autoFillRows_(sh, from, to, res) {
   var COLX = res.COLX;
   ACTIVE_CL = res.CLX; // buildFormula_ が解決済み列レターで数式を作る
+  PF_PROMPT_REF = pfPromptRef_(sh.getParent());
   try {
     for (var r = from; r <= to; r++) {
       var ab = sh.getRange(r, COLX.RAW).getValue();
       if (String(ab).trim() === '') continue; // 空行はスキップ（AI("")防止）
       FORMULA_TARGET_COLS.forEach(function (key) {
-        sh.getRange(r, COLX[key]).setFormula(buildFormula_(key, r));
+        var cell = sh.getRange(r, COLX[key]);
+        // 手入力の整形文は上書きしない（原文を変えた場合は整形チェックがNGで知らせる）
+        if (PRESERVE_MANUAL_KEYS.indexOf(key) >= 0 && cell.getFormula() === '' && String(cell.getValue()) !== '') return;
+        cell.setFormula(buildFormula_(key, r));
       });
     }
   } finally {
     ACTIVE_CL = null;
+    PF_PROMPT_REF = null;
   }
 }
 

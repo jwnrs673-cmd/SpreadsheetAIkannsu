@@ -5,7 +5,8 @@
  *
  * 【安全設計（★本番シート「ご意見記録」対応）】
  *  - メイン表で触れるのは FORMULA_TARGET_COLS の列（数式）と AK〜AO のプルダウンのみ。
- *  - 原文AB・要約AC・確定AK〜AO(値)・PII(N/O/P)・社員/管理列(BB〜CI)は一切上書きしない。
+ *  - 原文AB・確定AK〜AO(値)・PII(N/O/P)・社員/管理列(BB〜CI)は一切上書きしない。
+ *  - AC(整形)は =AI(CL) を入れるが、手入力の値が入ったセルは上書きしない。
  *  - 小分類の補助列 CJ/CK を末尾に新設（既存列を1つもずらさない）。
  *  - マスター系シートはシステム管理なので毎回最新化（メイン表とは別シート）。
  *  - 二重実行しても壊れない。原文が無い行にはAI数式を入れない（AI("")防止）。
@@ -21,12 +22,14 @@ const SETUP_PLAN = [
   '  大分類一覧 / 設定 / 精度検証',
   '',
   '【メイン表「' + SHEETS.CLAIM + '」で触れる列だけ】',
-  '  数式を設定: AC(要約), AD, AP, AE, AQ, AR, AF, CJ(新), CK(新), AG, AS, AJ, AT, AH, AU, AI, CL(新)',
+  '  数式を設定: AC(整形), AD, AP, AE, AQ, AR, AF, CJ(新), CK(新), AG, AS, AJ, AT, AH, AU, AI, CL(新), CM(新)',
   '  プルダウン: AK, AL, AM, AN, AO',
-  '  新ヘッダ追加: CJ=小分類候補文, CK=小分類用結合文, CL=要約用結合文',
+  '  新ヘッダ追加: CJ=小分類候補文, CK=小分類用結合文, CL=整形用結合文(旧:要約用結合文), CM=整形チェック',
+  '',
+  '【段落整形】シート「' + SHEETS.FMT_CONFIG + '」（無ければ作成。既存の値は保持）',
   '',
   '【絶対に触れない列】AB(原文) / AK〜AO(確定の値) / N,O,P(個人情報) / BB〜CI(社員・管理)',
-  '  ※AC(内容・要約)はAI要約を入れるため上書き対象（既存の手入力要約がある場合は要注意）'
+  '  ※AC(内容・整形)は =AI(CL) を入れる。手入力の値が入っているセルは上書きしない'
 ];
 
 /* ============================ 実行エントリ ============================ */
@@ -53,7 +56,9 @@ function setupMasters() {
     writeConfigSheet_(ss);
     setupAccuracySheet_(ss);
     stampConfig_(ss);
-    SpreadsheetApp.getActive().toast('マスター系シートを構築しました（既存の分類は温存）。', 'クレームAI分類', 5);
+    var pf = pfEnsureSettingsSheet_(ss); // 段落整形設定（既存の値は保持）
+    if (!pf.ok) SpreadsheetApp.getUi().alert(pf.msg);
+    SpreadsheetApp.getActive().toast('マスター系シートを構築しました（既存の分類は温存）。' + (pf.ok ? pf.msg : ''), 'クレームAI分類', 5);
   } catch (e) {
     Logger.log('setupMasters: エラー ' + e + '\n' + (e.stack || ''));
     SpreadsheetApp.getUi().alert('マスター構築でエラー: ' + e.message);
@@ -107,15 +112,17 @@ function applyMainSheetFormulas() {
   }
   var res = ui.alert('メイン表への数式適用',
     '「' + SHEETS.CLAIM + '」の次の列だけを上書きします。\n' +
-    '数式: AC(AI要約),AD,AP,AE,AQ,AR,AF,CJ,CK,AG,AS,AJ,AT,AH,AU,AI,CL\n' +
+    '数式: AC(段落整形),AD,AP,AE,AQ,AR,AF,CJ,CK,AG,AS,AJ,AT,AH,AU,AI,CL,CM\n' +
     'プルダウン: AK〜AO\n' +
     '（原文AB・確定値・個人情報・社員/管理列には触れません。\n' +
-    '　AC=要約はAIで上書きします＝既存の手入力要約がある場合はご注意）\n\n実行しますか？',
+    '　AC=段落整形は、手入力の値が入っているセルは上書きしません）\n\n実行しますか？',
     ui.ButtonSet.OK_CANCEL);
   if (res !== ui.Button.OK) return;
 
   try {
     if (!ss.getSheetByName(SHEETS.RULE_CHU)) setupMasters(); // マスター未作成なら作る
+    var pf = pfEnsureSettingsSheet_(ss);
+    if (!pf.ok) { ui.alert(pf.msg); return; }
     var res = resolveColumns_(sh); // ★見出し名から列位置を解決（並び替えに対応）
     setupMainSheet_(sh, res);
     setupValidations_(ss, sh, res);
@@ -216,7 +223,8 @@ function headerIndexMap_(sh) {
 /**
  * ★メイン表の列位置を「見出し名」から解決する。
  *  - 見つかった見出しはその位置を使う（列を並び替えても追従）。
- *  - システム補助列(小分類候補文/小分類用結合文/要約用結合文)が無ければ末尾に新設。
+ *  - システム補助列(小分類候補文/小分類用結合文/整形用結合文/整形チェック)が無ければ末尾に新設。
+ *  - 旧見出し(HEADER_ALIASES)でも見つける。補助列が旧名なら新名へ書き換える。
  *  - 見出しが実質空のシートは、従来の固定位置(Config.gs)にフォールバック。
  *  - 必須見出しが見つからない場合はエラー（見出し名の確認を促す）。
  * @return {{COLX:Object, CLX:Object, dynamic:boolean}}
@@ -236,7 +244,12 @@ function resolveColumns_(sh) {
   var COLX = {}, CLX = {}, missing = [];
   var nextCol = hi.lastCol + 1;
   Object.keys(HEADER_TEXT).forEach(function (key) {
-    var idx = hi.map[normHeader_(HEADER_TEXT[key])];
+    var found = findHeaderIdx_(hi, key);
+    var idx = found.idx;
+    if (idx !== undefined && found.alias && SYSTEM_HELPER_KEYS.indexOf(key) >= 0) {
+      sh.getRange(1, idx).setValue(HEADER_TEXT[key]); // システム補助列の旧名を新名へ
+      Logger.log('補助列を改名: ' + found.alias + ' → ' + HEADER_TEXT[key]);
+    }
     if (idx === undefined) {
       if (SYSTEM_HELPER_KEYS.indexOf(key) >= 0) {
         sh.getRange(1, nextCol).setValue(HEADER_TEXT[key]).setFontWeight('bold').setBackground('#d9ead3');
@@ -257,6 +270,18 @@ function resolveColumns_(sh) {
   return { COLX: COLX, CLX: CLX, dynamic: true };
 }
 
+/** キーの見出しを HEADER_TEXT → HEADER_ALIASES の順で探す。 */
+function findHeaderIdx_(hi, key) {
+  var idx = hi.map[normHeader_(HEADER_TEXT[key])];
+  if (idx !== undefined) return { idx: idx, alias: null };
+  var al = (typeof HEADER_ALIASES !== 'undefined' && HEADER_ALIASES[key]) || [];
+  for (var i = 0; i < al.length; i++) {
+    var j = hi.map[normHeader_(al[i])];
+    if (j !== undefined) return { idx: j, alias: al[i] };
+  }
+  return { idx: undefined, alias: null };
+}
+
 /** 固定位置(Config.gsのCOL/CL)から解決マップを作る（フォールバック用）。 */
 function staticRes_() {
   var COLX = {}, CLX = {};
@@ -268,29 +293,40 @@ function staticRes_() {
 
 /** 数式ビルダーが参照する列レターマップ（実行時に resolveColumns_ の結果をセット）。 */
 var ACTIVE_CL = null;
+/** 整形用結合文が参照する指示文セル（実行時に pfPromptRef_ の結果をセット）。 */
+var PF_PROMPT_REF = null;
 
 /** メイン表に、許可された数式列だけを設定する（AI列は原文行のみ）。 */
 function setupMainSheet_(sh, res) {
   var COLX = res.COLX;
   ACTIVE_CL = res.CLX; // buildFormula_ がこの列レターで数式を作る
+  PF_PROMPT_REF = pfPromptRef_(sh.getParent());
 
   var lastData = getLastDataRow_(sh, COLX.RAW);
   var templateLast = Math.max(lastData, LIMITS.TEMPLATE_ROWS + 1);
+  var kept = 0;
 
-  FORMULA_TARGET_COLS.forEach(function (key) {
-    if (AI_COLS.indexOf(key) >= 0) {
-      if (lastData >= 2) setColumnFormulas_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
-    } else {
-      setColumnFormulas_(sh, COLX[key], 2, templateLast, buildFormula_.bind(null, key));
-    }
-  });
-
-  ACTIVE_CL = null; // 後始末
+  try {
+    FORMULA_TARGET_COLS.forEach(function (key) {
+      if (PRESERVE_MANUAL_KEYS.indexOf(key) >= 0) {
+        if (lastData >= 2) kept += setColumnFormulasPreserving_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
+      } else if (AI_COLS.indexOf(key) >= 0) {
+        if (lastData >= 2) setColumnFormulas_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
+      } else {
+        setColumnFormulas_(sh, COLX[key], 2, templateLast, buildFormula_.bind(null, key));
+      }
+    });
+    pfApplyCheckFormatting_(sh, COLX.FMT_CHK, templateLast);
+  } finally {
+    ACTIVE_CL = null; // 後始末
+    PF_PROMPT_REF = null;
+  }
 
   var msg;
   if (lastData >= 2) {
     msg = '数式を設定しました。AI列: 2〜' + lastData + '行 ／ 補助列: 2〜' + templateLast + '行'
-        + (res.dynamic ? '（見出し名で列を自動解決）' : '（固定位置）') + '。';
+        + (res.dynamic ? '（見出し名で列を自動解決）' : '（固定位置）') + '。'
+        + (kept ? ' ' + res.CLX.AI_FMT + '列の手入力値 ' + kept + '件は上書きしていません。' : '');
   } else {
     msg = '補助列のテンプレ数式を 2〜' + templateLast + '行に入れました。'
         + 'AB(原文)を入力すると、その行が自動分類されます（onEdit）。';
@@ -305,6 +341,33 @@ function setColumnFormulas_(sh, col, from, to, builder) {
   var arr = [];
   for (var r = from; r <= to; r++) arr.push([builder(r)]);
   sh.getRange(from, col, n, 1).setFormulas(arr);
+}
+
+/**
+ * 手入力の値（数式でない値）が入ったセルは残し、それ以外に数式を入れる。
+ * 同じ数式が既に入っているセルも書き換えない（生成済みのAI結果を保つため）。
+ * @return {number} 残した手入力セルの数
+ */
+function setColumnFormulasPreserving_(sh, col, from, to, builder) {
+  var n = to - from + 1;
+  if (n <= 0) return 0;
+  var rg = sh.getRange(from, col, n, 1);
+  var formulas = rg.getFormulas(), values = rg.getValues();
+  var kept = 0, runStart = -1, run = [];
+  var flush = function () {
+    if (run.length) sh.getRange(from + runStart, col, run.length, 1).setFormulas(run);
+    runStart = -1; run = [];
+  };
+  for (var i = 0; i < n; i++) {
+    var want = builder(from + i);
+    var manual = formulas[i][0] === '' && String(values[i][0]) !== '';
+    if (manual) kept++;
+    if (manual || formulas[i][0] === want) { flush(); continue; }
+    if (runStart < 0) runStart = i;
+    run.push([want]);
+  }
+  flush();
+  return kept;
 }
 
 function getLastDataRow_(sh, col) {
@@ -345,7 +408,8 @@ function buildFormula_(key, r) {
   var L = ACTIVE_CL || CL; // 実行時に解決した列レター（無ければ固定既定）
   var AB=L.RAW, AD=L.AITEXT, AE=L.AI_DAI, AF=L.AI_CHU, AG=L.AI_SHO, AH=L.AI_SCENE,
       AP=L.G_DAI, AQ=L.I_CHU, AR=L.J_CHU, AS=L.L_REASON, AT=L.P_SCENE, AU=L.R_CAUSE,
-      CJ=L.V_SHO, CK=L.W_SHO, CLc=L.SUM_TXT;
+      CJ=L.V_SHO, CK=L.W_SHO, CLc=L.FMT_TXT, AC=L.AI_FMT;
+  var PR = PF_PROMPT_REF || ("'" + SHEETS.FMT_CONFIG + "'!$B$2");
 
   switch (key) {
 
@@ -362,13 +426,18 @@ function buildFormula_(key, r) {
         '"(ご住所|住所|お届け先|届け先)[ 　]*[:：][ 　]*[^ 　、。]{1,40}","$1：[住所]"),' +
         '"\\d{7,}","[番号]"))';
 
-    case 'SUM_TXT': // CL 要約用結合文（AC=AI要約の入力プロンプト）
-      return '=IF($'+AD+r+'="","",' +
-        '"あなたはお客様相談窓口の担当者です。次のご意見の要点だけを、お客様の立場で自然な文章に要約してください。次を厳守してください。(1)原文に書かれていない情報・推測・「適切に対応いたします」等の定型的な決まり文句を足さない。(2)文字数を埋めるための水増しをしない。内容が短ければ一文で構わない。(3)長くなる場合でも200文字以内（下限なし・短い方が良い）。(4)事実は変えない、箇条書きにしない、個人情報や固有の番号は含めない。"&'+NL+'&' +
-        '"【ご意見内容】"&'+NL+'&$'+AD+r+'&'+NL+'&"【出力形式】要点のみの要約文。水増し禁止。最大200文字。")';
+    case 'FMT_TXT': // CL 整形用結合文（AC=段落整形の入力。指示文は段落整形設定シートを参照）
+      return '=IF($'+AB+r+'="","",'+PR+'&'+NL+'&"【整形対象の文章ここから】"&'+NL+'&$'+AB+r+'&'+NL+'&"【整形対象の文章ここまで】")';
 
-    case 'AI_SUM': // AC AI要約（200字・顧客目線）
+    case 'AI_FMT': // AC 段落整形（原文を改行だけ調整）
       return '='+AIF+'($'+CLc+r+')';
+
+    case 'FMT_CHK': // CM 整形チェック（CR/LFだけ除いてEXACT。AI関数は含めない）
+      var strip = function (ref) { return 'SUBSTITUTE(SUBSTITUTE('+ref+',CHAR(13),""),CHAR(10),"")'; };
+      return '=IF(OR(ISERROR($'+AB+r+'),ISERROR($'+AC+r+')),"エラー",' +
+        'IF($'+AB+r+'="",IF($'+AC+r+'="","","対象外（原文が空）"),' +
+        'IF($'+AC+r+'="","未生成",' +
+        'IF(EXACT('+strip('$'+AB+r)+','+strip('$'+AC+r)+'),"OK（文字一致）","NG（改行以外に差あり）"))))';
 
     case 'G_DAI': // AP 大分類用結合文
       return '=IF($'+AD+r+'="","",' +
@@ -604,7 +673,7 @@ function setupAccuracySheet_(ss) {
     try {
       var hi = headerIndexMap_(claim);
       Object.keys(HEADER_TEXT).forEach(function (k) {
-        var idx = hi.map[normHeader_(HEADER_TEXT[k])];
+        var idx = findHeaderIdx_(hi, k).idx;
         if (idx) LET[k] = colLetter_(idx);
       });
       var sIdx = hi.map[normHeader_(REF_HEADER_TEXT.STORE)];
@@ -615,7 +684,7 @@ function setupAccuracySheet_(ss) {
 
   var AE=col(LET.AI_DAI),AK=col(LET.FIX_DAI), AF=col(LET.AI_CHU),AL=col(LET.FIX_CHU),
       AG=col(LET.AI_SHO),AM=col(LET.FIX_SHO), AH=col(LET.AI_SCENE),AN=col(LET.FIX_SCENE),
-      AI=col(LET.AI_CAUSE),AO=col(LET.FIX_CAUSE), W=col(storeLetter), AC=col(LET.AI_SUM);
+      AI=col(LET.AI_CAUSE),AO=col(LET.FIX_CAUSE), W=col(storeLetter), AC=col(LET.AI_FMT);
 
   var rows = [];
   rows.push(['クレーム(ご意見)AI分類 精度検証', '', '', '']);
@@ -656,14 +725,14 @@ function setupAccuracySheet_(ss) {
   // 誤分類一覧（大分類）: 左 A〜D
   var top = values.length + 3;
   sh.getRange(top, 1).setValue('■ 大分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
-  sh.getRange(top + 1, 1, 1, 4).setValues([['店名', '内容(要約)', 'AI大分類', '確定大分類']])
+  sh.getRange(top + 1, 1, 1, 4).setValues([['店名', '内容(整形)', 'AI大分類', '確定大分類']])
     .setFontWeight('bold').setBackground('#f4cccc');
   sh.getRange(top + 2, 1).setFormula(
     '=IFERROR(FILTER({'+W+','+AC+','+AE+','+AK+'},('+AK+'<>"")*('+AE+'<>'+AK+')),"（不一致なし）")');
 
   // 誤分類一覧（中分類）: 右 F〜I（縦スピル衝突回避）
   sh.getRange(top, 6).setValue('■ 中分類 誤分類一覧（確定済みで AI≠確定）').setFontWeight('bold');
-  sh.getRange(top + 1, 6, 1, 4).setValues([['店名', '内容(要約)', 'AI中分類', '確定中分類']])
+  sh.getRange(top + 1, 6, 1, 4).setValues([['店名', '内容(整形)', 'AI中分類', '確定中分類']])
     .setFontWeight('bold').setBackground('#f4cccc');
   sh.getRange(top + 2, 6).setFormula(
     '=IFERROR(FILTER({'+W+','+AC+','+AF+','+AL+'},('+AL+'<>"")*('+AF+'<>'+AL+')),"（不一致なし）")');
