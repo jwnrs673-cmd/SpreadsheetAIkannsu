@@ -354,7 +354,7 @@ console.log('\n[5] 段落整形設定シート');
     env.ui.next = 'OK'; g('pfResetPrompt')();
     eq(sh.getRange(row, 2).getValue(), g('PF_DEFAULT_PROMPT'));
     const p = g('PF_DEFAULT_PROMPT');
-    ok(p.includes('句点「。」の直後で改行') && p.includes('空行（何も書かれていない行）は入れない') && p.includes('変更してよいのは改行だけです。'));
+    ok(p.includes('「。」「！」「？」「!」「?」）の直後で改行') && p.includes('原文にもともとある改行は、原則そのまま残して') && p.includes('空行（何も書かれていない行）は入れない') && p.includes('変更してよいのは改行だけです。'));
   });
   t('同名で形の違うシートは変更せず停止', () => {
     const env2 = makeEnv();
