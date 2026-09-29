@@ -346,6 +346,16 @@ console.log('\n[5] 段落整形設定シート');
     sh.insertRowBefore(2);
     eq(g('pfPromptRef_')(ss), "'段落整形設定'!$B$3");
   });
+  t('「指示文を初期値に戻す」：キャンセルなら変えない／OKで初期値に置き換え', () => {
+    const sh = ss.getSheetByName('段落整形設定');
+    const row = g('pfReadSettings_')(ss)['AIへの指示文'].row;
+    env.ui.next = 'CANCEL'; g('pfResetPrompt')();
+    eq(sh.getRange(row, 2).getValue(), '利用者が編集した指示文');
+    env.ui.next = 'OK'; g('pfResetPrompt')();
+    eq(sh.getRange(row, 2).getValue(), g('PF_DEFAULT_PROMPT'));
+    const p = g('PF_DEFAULT_PROMPT');
+    ok(p.includes('句点「。」の直後で改行') && p.includes('空行（何も書かれていない行）は入れない') && p.includes('変更してよいのは改行だけです。'));
+  });
   t('同名で形の違うシートは変更せず停止', () => {
     const env2 = makeEnv();
     const other = env2.ss.insertSheet('段落整形設定');

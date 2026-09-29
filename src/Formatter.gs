@@ -158,6 +158,22 @@ function pfOpenSettings() {
   SpreadsheetApp.getActive().toast(r.msg, '段落整形', 5);
 }
 
+/** メニュー：段落整形設定の「AIへの指示文」を、コード内の初期値（PF_DEFAULT_PROMPT）に戻す。 */
+function pfResetPrompt() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var r = pfEnsureSettingsSheet_(ss);
+  if (!r.ok) { ui.alert(r.msg); return; }
+  var row = pfReadSettings_(ss)['AIへの指示文'].row || 2;
+  var ans = ui.alert('指示文を初期値に戻す',
+    '「' + SHEETS.FMT_CONFIG + '」B' + row + 'のAIへの指示文を、コードに書かれた初期値で置き換えます。\n' +
+    '（いまの指示文は上書きされます。原文・整形結果には触れません）\n\n実行しますか？', ui.ButtonSet.OK_CANCEL);
+  if (ans !== ui.Button.OK) return;
+  ss.getSheetByName(SHEETS.FMT_CONFIG).getRange(row, 2).setValue(PF_DEFAULT_PROMPT);
+  ui.alert('指示文を初期値に戻しました。',
+    '整形列（内容（要約））の範囲を選んで「更新して挿入」を押すと、新しい指示文で作り直されます。', ui.ButtonSet.OK);
+}
+
 /* ============================ 選択行の照合 ============================ */
 
 /** ご意見記録で選択中の行を返す（別シートなら null）。 */

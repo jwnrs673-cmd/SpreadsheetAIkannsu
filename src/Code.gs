@@ -30,7 +30,8 @@ function buildClaimAiMenu_() {
   var pfMenu = ui.createMenu('段落整形')
     .addItem('選択行の原文一致チェック', 'pfCheckSelectedRows')
     .addItem('表示を再調整（列幅・折り返し）', 'pfAdjustDisplay')
-    .addItem('段落整形設定シートを開く', 'pfOpenSettings');
+    .addItem('段落整形設定シートを開く', 'pfOpenSettings')
+    .addItem('指示文を初期値に戻す', 'pfResetPrompt');
   ui.createMenu('クレームAI分類')
     .addItem('① マスター系シートを作成/更新', 'setupMasters')
     .addItem('② メイン表に数式・プルダウンを適用', 'applyMainSheetFormulas')
