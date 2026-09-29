@@ -27,9 +27,8 @@ function onOpen() {
 /** 本システム「クレームAI分類」メニューを構築。 */
 function buildClaimAiMenu_() {
   var ui = SpreadsheetApp.getUi();
-  var pfMenu = ui.createMenu('段落整形（AC列）')
+  var pfMenu = ui.createMenu('段落整形')
     .addItem('選択行の原文一致チェック', 'pfCheckSelectedRows')
-    .addItem('選択行から会議用シートを作成', 'pfBuildMeetingSheet')
     .addItem('表示を再調整（列幅・折り返し）', 'pfAdjustDisplay')
     .addItem('段落整形設定シートを開く', 'pfOpenSettings');
   ui.createMenu('クレームAI分類')

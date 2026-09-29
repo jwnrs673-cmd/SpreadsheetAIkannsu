@@ -355,7 +355,7 @@ console.log('\n[5] 段落整形設定シート');
   });
 }
 
-console.log('\n[6] ②数式の適用（手入力値・生成済みを守る）');
+console.log('\n[6] ②数式の適用（手入力値・生成済みの結果を守る）');
 {
   const env = makeEnv(); const { g, ss } = env;
   const sh = makeClaimSheet(env);
@@ -367,6 +367,10 @@ console.log('\n[6] ②数式の適用（手入力値・生成済みを守る）'
   sh.getRange(manualRow, res.COLX.AI_FMT).setValue('手入力の原文です。');
   const blankRow = manualRow + 1;     // 原文あり・AC空（未配置）
   sh.getRange(blankRow, res.COLX.RAW).setValue('未配置の原文です。');
+  // AI大分類：row2 は生成済み（同じ数式＋結果）、row3 は数式でない値
+  const aiDaiFormula = (r) => { env.ctx.ACTIVE_CL = res.CLX; const f = g('buildFormula_')('AI_DAI', r); env.ctx.ACTIVE_CL = null; return f; };
+  sh.getRange(2, res.COLX.AI_DAI).setFormula(aiDaiFormula(2)); sh.gen(2, res.COLX.AI_DAI, 'レジ接客');
+  sh.getRange(3, res.COLX.AI_DAI).setValue('手で入れた値');
   sh.formulaWrites = [];
   g('setupMainSheet_')(sh, res);
   const acWrites = sh.formulaWrites.filter(([, c]) => c === res.COLX.AI_FMT).map(([r]) => r);
@@ -385,6 +389,13 @@ console.log('\n[6] ②数式の適用（手入力値・生成済みを守る）'
     eq(vals, 'NG,エラー,未生成');
   });
   t('再実行しても色分けルールが重複しない', () => { g('setupMainSheet_')(sh, res); eq(sh.cf.length, 3); });
+  t('AI分類の列：同じ数式が入っている行は書き換えない（分類結果を保つ）', () => {
+    ok(!sh.formulaWrites.some(([r, c]) => r === 2 && c === res.COLX.AI_DAI), 'AI大分類 row2 を書き換えた');
+    eq(sh.get(2, res.COLX.AI_DAI), 'レジ接客');
+  });
+  t('AI分類の列：数式でない値は従来どおり数式に置き換える', () => {
+    eq(sh.formula(3, res.COLX.AI_DAI), aiDaiFormula(3));
+  });
   t('原文入力時の自動反映（onEdit）でも手入力の整形文を守る', () => {
     g('autoFillRows_')(sh, manualRow, blankRow, res);
     eq(sh.formula(manualRow, res.COLX.AI_FMT), ''); eq(sh.get(manualRow, res.COLX.AI_FMT), '手入力の原文です。');
@@ -392,7 +403,7 @@ console.log('\n[6] ②数式の適用（手入力値・生成済みを守る）'
   });
 }
 
-console.log('\n[7] 会議用シートの作成');
+console.log('\n[7] 選択行の原文一致チェック（メニュー）');
 {
   const env = makeEnv(); const { g, ss, ui } = env;
   const sh = makeClaimSheet(env);
@@ -400,75 +411,33 @@ console.log('\n[7] 会議用シートの作成');
   const res = g('resolveColumns_')(sh);
   loadCases(env, sh, res);
   const last = CASES.length + 1;
-  const okCases = CASES.filter((c) => c.期待 === 'OK');
-
-  ss._select(sh, [[2, last, 5]]);
-  ui.next = 'CANCEL';
-  g('pfBuildMeetingSheet')();
-  t('確認でキャンセルすると何も作らない', () => eq(ss.getSheetByName('会議用'), null));
-  t('確認画面に転記件数・転記しない行と理由が出る', () => {
-    const m = ui.alerts[ui.alerts.length - 1];
-    ok(m.includes('転記する行：' + okCases.length + '件'), m);
-    ok(/【NG】/.test(m) && /【未生成】/.test(m) && /【エラー】/.test(m), m);
-  });
-
-  ui.next = 'OK';
-  g('pfBuildMeetingSheet')();
-  const mt = ss.getSheetByName('会議用');
-  t('OKの行だけを順番どおり転記（受付日時・店名・本文）', () => {
-    eq(mt.getLastRow(), 2 + okCases.length);
-    okCases.forEach((c, i) => {
-      eq(mt.get(3 + i, 1), c.受付日時); eq(mt.get(3 + i, 2), c.店名); eq(mt.get(3 + i, 3), c.模擬整形結果);
-    });
-  });
-  t('作成日時とスナップショットである旨を表示', () => {
-    eq(mt.get(1, 1), '作成日時'); ok(String(mt.get(1, 2)).length >= 10); ok(/スナップショット/.test(mt.get(1, 3)));
-  });
-  t('本文が「=」で始まっても数式にならず文字が変わらない', () => {
-    const i = okCases.findIndex((c) => c.id === 'C12');
-    eq(mt.formula(3 + i, 3), ''); eq(mt.get(3 + i, 3), okCases[i].模擬整形結果);
-  });
-  t('元の行番号を残す', () => eq(mt.get(3, 4), CASES.findIndex((c) => c.id === okCases[0].id) + 2));
-  t('ご意見記録は変更しない', () => CASES.forEach((c, i) => { if (c.原文) eq(sh.get(i + 2, res.COLX.RAW), c.原文); }));
-
-  // 照合後に原文を変更 → 転記時の再照合で弾かれる
-  const c02row = CASES.findIndex((c) => c.id === 'C02') + 2;
-  ss._select(sh, [[c02row, c02row, 1]]);
+  const snapshot = JSON.stringify([...sh.v]) + JSON.stringify([...sh.f]);
+  ss._select(sh, [[1, last, 5]]); // 見出し行を含めて選択
   g('pfCheckSelectedRows')();
-  t('変更前はチェックOK', () => ok(/OK 1件/.test(ui.alerts[ui.alerts.length - 1])));
-  sh.getRange(c02row, res.COLX.RAW).setValue('レジの方の笑顔が素敵でした。ありがとう。');
-  ui.alerts.length = 0;
-  g('pfBuildMeetingSheet')();
-  t('照合後に原文を変えると、転記時の再照合でNGになり転記しない', () => {
-    const m = ui.alerts.join('\n');
-    ok(m.includes('転記できる行') && m.includes('行' + c02row + '【NG】'), m);
-    eq(mt.getLastRow(), 2 + okCases.length, '会議用が上書きされた');
+  const m = ui.alerts[ui.alerts.length - 1];
+  const n = (k) => CASES.filter((c) => c.期待 === k).length;
+  t('件数を状態ごとに表示（見出し行は除外）', () => {
+    ok(m.includes('選択 ' + CASES.length + '行'), m);
+    ['OK', 'NG', '未生成', 'エラー', '対象外'].forEach((k) => ok(m.includes(k + ' ' + n(k) + '件'), k + ': ' + m));
   });
-
-  t('既存の会議用データを置き換える前に件数を示す', () => {
-    ss._select(sh, [[2, 3, 1]]);
-    ui.next = 'CANCEL'; ui.alerts.length = 0;
-    g('pfBuildMeetingSheet')();
-    ok(ui.alerts[0].includes('既存データ ' + okCases.length + '件'), ui.alerts[0]);
+  t('NG は何文字目付近で何が違うかを示す', () => {
+    const r10 = CASES.findIndex((c) => c.id === 'C10') + 2;
+    ok(m.includes('行' + r10 + '【NG】') && /12文字目付近/.test(m) && m.includes('でｓ') && m.includes('です'), m);
   });
-
-  t('同名で形の違う「会議用」シートは変更せず停止', () => {
-    const env2 = makeEnv(); const sh2 = makeClaimSheet(env2);
-    env2.g('pfEnsureSettingsSheet_')(env2.ss);
-    const res2 = env2.g('resolveColumns_')(sh2);
-    loadCases(env2, sh2, res2);
-    const other = env2.ss.insertSheet('会議用');
-    other.getRange(1, 1).setValue('手作りの資料');
-    env2.ss._select(sh2, [[2, 3, 1]]); env2.ui.next = 'OK';
-    env2.g('pfBuildMeetingSheet')();
-    eq(other.get(1, 1), '手作りの資料'); eq(other.getLastRow(), 1);
+  t('案内の列記号は見出しから解決した列（固定のACではない）', () => ok(m.includes(res.CLX.AI_FMT + '列を選んで'), m));
+  t('OK は段落の自然さを保証しない旨を表示', () => ok(/段落の自然さは目視/.test(m)));
+  t('シートには何も書き込まない', () => eq(JSON.stringify([...sh.v]) + JSON.stringify([...sh.f]), snapshot));
+  t('照合後に原文を変えると、次のチェックでNGになる（過去の結果を使わない）', () => {
+    const r02 = CASES.findIndex((c) => c.id === 'C02') + 2;
+    sh.getRange(r02, res.COLX.RAW).setValue('レジの方の笑顔が素敵でした。ありがとう。');
+    ss._select(sh, [[r02, r02, 1]]);
+    g('pfCheckSelectedRows')();
+    ok(ui.alerts[ui.alerts.length - 1].includes('NG 1件'));
   });
-
   t('ご意見記録以外のシートで実行したら案内して止まる', () => {
     ss._select(ss.getSheetByName('段落整形設定'), [[2, 3, 1]]);
-    ui.alerts.length = 0;
-    g('pfBuildMeetingSheet')();
-    ok(/選択してから実行/.test(ui.alerts[0]));
+    g('pfCheckSelectedRows')();
+    ok(/選択してから実行/.test(ui.alerts[ui.alerts.length - 1]));
   });
 }
 
@@ -478,7 +447,6 @@ console.log('\n[8] その他');
   t('選択行の解析：複数範囲・重複・見出し行を処理', () => {
     const R = (a, b) => ({ getRow: () => a, getLastRow: () => b });
     eq(JSON.stringify(g('pfRowsFromRanges_')([R(5, 7), R(1, 3), R(6, 9)])), '[2,3,5,6,7,8,9]');
-    eq(g('pfRowsLabel_')([2, 3, 5, 6, 7, 9]), '2〜3, 5〜7, 9');
   });
   t('ログに原文・整形結果を出力していない', () => {
     const leaked = LOGS.filter((l) => CASES.some((c) => c.原文.length > 8 && l.includes(c.原文.slice(0, 8))));

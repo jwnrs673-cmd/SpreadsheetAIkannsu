@@ -308,10 +308,10 @@ function setupMainSheet_(sh, res) {
 
   try {
     FORMULA_TARGET_COLS.forEach(function (key) {
-      if (PRESERVE_MANUAL_KEYS.indexOf(key) >= 0) {
-        if (lastData >= 2) kept += setColumnFormulasPreserving_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
-      } else if (AI_COLS.indexOf(key) >= 0) {
-        if (lastData >= 2) setColumnFormulas_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key));
+      if (AI_COLS.indexOf(key) >= 0) {
+        // AI列：同じ数式が入っているセルは書き換えない（生成済みの結果を保つ）
+        var keepManual = PRESERVE_MANUAL_KEYS.indexOf(key) >= 0;
+        if (lastData >= 2) kept += setColumnFormulasPreserving_(sh, COLX[key], 2, lastData, buildFormula_.bind(null, key), keepManual);
       } else {
         setColumnFormulas_(sh, COLX[key], 2, templateLast, buildFormula_.bind(null, key));
       }
@@ -344,11 +344,11 @@ function setColumnFormulas_(sh, col, from, to, builder) {
 }
 
 /**
- * 手入力の値（数式でない値）が入ったセルは残し、それ以外に数式を入れる。
- * 同じ数式が既に入っているセルも書き換えない（生成済みのAI結果を保つため）。
+ * 同じ数式が既に入っているセルは書き換えずに、数式を入れる（生成済みのAI結果を保つため）。
+ * keepManual=true なら、手入力の値（数式でない値）が入ったセルも残す。
  * @return {number} 残した手入力セルの数
  */
-function setColumnFormulasPreserving_(sh, col, from, to, builder) {
+function setColumnFormulasPreserving_(sh, col, from, to, builder, keepManual) {
   var n = to - from + 1;
   if (n <= 0) return 0;
   var rg = sh.getRange(from, col, n, 1);
@@ -360,7 +360,7 @@ function setColumnFormulasPreserving_(sh, col, from, to, builder) {
   };
   for (var i = 0; i < n; i++) {
     var want = builder(from + i);
-    var manual = formulas[i][0] === '' && String(values[i][0]) !== '';
+    var manual = keepManual && formulas[i][0] === '' && String(values[i][0]) !== '';
     if (manual) kept++;
     if (manual || formulas[i][0] === want) { flush(); continue; }
     if (runStart < 0) runStart = i;
