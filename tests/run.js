@@ -200,7 +200,7 @@ function balanced(formula) {
 function makeClaimSheet(env) {
   const sh = env.ss.insertSheet('ご意見記録');
   const HT = env.g('HEADER_TEXT');
-  const heads = ['状況', '受付日時', '店名'];
+  const heads = ['状況', '受電日', '店名'];
   Object.keys(HT).forEach((k) => {
     if (k === 'FMT_CHK') return;                        // 整形チェック列はまだ無い
     if (k === 'AI_FMT') heads.push('内容（要約）');     // 旧見出し
@@ -218,7 +218,7 @@ function colOf(sh, header) {
 function loadCases(env, sh, res) {
   CASES.forEach((c, i) => {
     const r = i + 2;
-    sh.getRange(r, colOf(sh, '受付日時')).setValue(c.受付日時);
+    sh.getRange(r, colOf(sh, '受電日')).setValue(c.受付日時);
     sh.getRange(r, colOf(sh, '店名')).setValue(c.店名);
     if (c.原文 !== '') sh.getRange(r, res.COLX.RAW).setRichTextValues([[{ getText: () => c.原文 }]]);
     if (c.原文 !== '' || c.模擬整形結果 !== '') {

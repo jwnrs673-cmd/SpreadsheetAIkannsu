@@ -92,7 +92,7 @@ function pfSettingDefs_() {
     ['会議用：本文の列幅（px）', 760, '会議用シートC列の列幅。スクリーンの幅に合わせて調整してください。'],
     ['会議用：フォントサイズ', 14, '会議用シート本文のフォントサイズ。仮の初期値です。'],
     ['長文注意の目安（文字数）', 600, 'これを超える本文は、1画面に収まらない可能性として注意表示します。'],
-    ['転記元：受付日時の見出し', '受付日時,受付日,日付', 'ご意見記録の1行目で、この順に探します（カンマ区切りで複数可）。'],
+    ['転記元：受付日時の見出し', '受電日,受付日時,受付日,日付', 'ご意見記録の1行目で、この順に探します（カンマ区切りで複数可）。会議用シートA列に転記する日付です。'],
     ['転記元：店舗名の見出し', '店名,店舗名', 'ご意見記録の1行目で、この順に探します（カンマ区切りで複数可）。']
   ];
 }
@@ -261,8 +261,11 @@ function pfBuildMeetingSheet() {
   var res;
   try { res = resolveColumns_(sel.sheet); } catch (e) { ui.alert(e.message); return; }
   var settings = pfReadSettings_(ss);
-  var dateCol = pfFindHeaderCol_(sel.sheet, settings['転記元：受付日時の見出し'].value);
-  var storeCol = pfFindHeaderCol_(sel.sheet, settings['転記元：店舗名の見出し'].value);
+  // 設定の見出し名で見つからなければ、初期値の候補でも探す
+  var defs = {};
+  pfSettingDefs_().forEach(function (d) { defs[d[0]] = d[1]; });
+  var dateCol = pfFindHeaderCol_(sel.sheet, settings['転記元：受付日時の見出し'].value + ',' + defs['転記元：受付日時の見出し']);
+  var storeCol = pfFindHeaderCol_(sel.sheet, settings['転記元：店舗名の見出し'].value + ',' + defs['転記元：店舗名の見出し']);
 
   // 転記直前にその時点の値で再照合（過去のOK表示は使わない）
   var inspected = pfInspectRows_(sel.sheet, sel.rows, res.COLX);
